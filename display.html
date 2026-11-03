@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Savant Spotlight · Display</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ss.css">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  #wait { position: fixed; left: 24px; bottom: 20px; font: 600 16px 'Barlow Condensed', sans-serif; color: #5d6e82; letter-spacing: .08em; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="wait">LOADING…</div>
+<script src="ss.js"></script>
+<script>
+'use strict';
+// OBS Browser Source: display.html?room=<room>   (1920×1080)
+//   &bg=clear  forces a transparent background regardless of the control setting
+(async () => {
+  const params = new URLSearchParams(location.search);
+  const ROOM = params.get('room') || '';
+  const stage = SS.createStage(document.getElementById('app'));
+  const fit = () => { stage.el.style.transform = `scale(${Math.min(innerWidth / 1920, innerHeight / 1080) || 1})`; };
+  addEventListener('resize', fit); fit();
+
+  // A Browser Source that isn't being rendered stops the animation clock, and every
+  // entrance would freeze at opacity 0. If the timeline stalls, paint end states instead.
+  let t0 = document.timeline.currentTime;
+  setInterval(() => {
+    const t = document.timeline.currentTime;
+    document.documentElement.classList.toggle('no-anim', t === t0);
+    t0 = t;
+  }, 1500);
+
+  const wait = document.getElementById('wait');
+  let S = { on: false }, lastSeq = 0;
+  const draw = () => {
+    if (params.get('bg') === 'clear') S.bg = 'clear';
+    stage.render(S);
+  };
+  // Off air still renders (hidden), so the next player's pitches are already loaded when he goes up.
+  function apply(s) {
+    if (!s || s.app !== 'ss' || !(s.seq > lastSeq)) return;
+    lastSeq = s.seq;
+    S = s;
+    draw();
+  }
+
+  SS.load(msg => { if (ROOM) wait.textContent = msg.toUpperCase(); });
+  if (!ROOM) wait.textContent = 'NO ROOM — OPEN THIS FROM THE CONTROL PAGE';
+  else SS.subscribe(SS.hubOf(params), ROOM, apply);
+  await SS.DB.ready;
+  wait.style.display = 'none';
+  draw();
+})();
+</script>
+</body>
+</html>
