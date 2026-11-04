@@ -464,7 +464,7 @@ const SS = (() => {
     if (!M.length) return empty(`No ${c.y} pitches on record`);
     const ars = {}; for (const a of c.L.ars[c.p.id] || []) ars[a.pt] = a;
     const hand = c.P[0]?.th === 'L' ? 1 : -1;      // pfx_x is catcher's view; this turns it into arm side +
-    const rh = clamp((c.H - 60) / M.length, 54, 92);
+    const rh = clamp((c.H - 60) / M.length, 54, c.W < 800 ? 150 : 92);
     const pill = (v, pt, key, fmt, lowerBetter) => {
       if (v == null) return '<div>—</div>';
       const p = rankPct(c.L.dist[pt]?.[key], v, lowerBetter);
@@ -473,7 +473,7 @@ const SS = (() => {
     // half width (compare) keeps the five columns that matter most
     const narrow = c.W < 800;
     const head = narrow ? ['PITCH', 'USAGE', 'MPH', 'WHIFF %', 'RV /100'] : ['PITCH', 'USAGE', 'MPH', 'SPIN', 'IVB', 'ARM-SIDE HB', 'WHIFF %', 'PUT AWAY %', 'xwOBA', 'RUN VALUE /100'];
-    let h = `<div class="ars" style="grid-auto-rows:${rh.toFixed(1)}px;grid-template-rows:38px${narrow ? ';grid-template-columns:200px 1fr repeat(3, 78px);inset:14px 12px' : ''}">` +
+    let h = `<div class="ars" style="grid-auto-rows:${rh.toFixed(1)}px;grid-template-rows:38px${narrow ? ';grid-template-columns:200px 1fr repeat(3, 78px);inset:14px 12px;align-content:center' : ''}">` +
       head.map((t, i) => `<div class="h${i < 2 ? ' l' : ''}">${t}</div>`).join('');
     const umax = Math.max(...M.map(m => m.share));
     M.forEach((m, i) => {
@@ -596,13 +596,21 @@ const SS = (() => {
     const base = sideFilter(c.P, 'pit', c.o.side);
     const M = mix(base, 0.03).slice(0, c.W > 900 ? 5 : 4);
     if (!M.length) return empty('No pitch locations');
-    const n = M.length, pad = 22, gap = 18;
-    let tw = (c.W - pad * 2 - gap * (n - 1)) / n, th = tw * 1.05;
-    if (th > c.H - 110) { th = c.H - 110; tw = th / 1.05; }
-    const x0 = (c.W - (tw * n + gap * (n - 1))) / 2, y0 = Math.max(64, (c.H - th) / 2 + 6);
+    // pick the rows × columns that give the biggest tiles: four in a row at half width is mostly empty space
+    const n = M.length, pad = 22, gap = 18, HEAD = 50, FOOT = 36, BOT = 26;
+    let best = null;
+    for (let r = 1; r <= n; r++) {
+      const cols = Math.ceil(n / r);
+      const tw = Math.min((c.W - pad * 2 - gap * (cols - 1)) / cols, ((c.H - BOT - (r - 1) * gap) / r - HEAD - FOOT) / 1.05);
+      if (!best || tw > best.tw) best = { r, cols, tw };
+    }
+    const { r: nr, cols, tw } = best, th = tw * 1.05, cellH = HEAD + th + FOOT;
+    const gy0 = Math.max(0, (c.H - BOT - (nr * cellH + (nr - 1) * gap)) / 2);
     let s = svgOpen(c.W, c.H);
     M.forEach((m, i) => {
-      const x = x0 + i * (tw + gap), pts = m.list.filter(lf.f);
+      const row = Math.floor(i / cols), inRow = Math.min(cols, n - row * cols), col = i - row * cols;
+      const rx0 = (c.W - (tw * inRow + gap * (inRow - 1))) / 2;
+      const x = rx0 + col * (tw + gap), y0 = gy0 + row * (cellH + gap) + HEAD, pts = m.list.filter(lf.f);
       s += `<rect x="${x}" y="${y0 - 46}" width="${tw}" height="8" fill="${pitchColor(m.pt)}"/>` +
         txt(x, y0 - 14, esc(PITCH_SHORT[m.pt] || m.name), 't-head', 'start') + txt(x + tw, y0 - 14, `${(m.share * 100).toFixed(0)}%`, 't-num', 'end');
       s += zoneTile(pts, x, y0, tw, th);
@@ -619,10 +627,12 @@ const SS = (() => {
     if (!M.length) return empty('No velocity data');
     const all = base.map(q => q.v).sort((a, b) => a - b);
     const lo = Math.floor(all[Math.floor(all.length * .005)] - 1.5), hi = Math.ceil(all[Math.ceil(all.length * .995) - 1] + 1.5);
-    const L = 230, Rm = 210, x0 = L, x1 = c.W - Rm, top = 26, bot = c.H - 52;
+    // half width (compare): slimmer name and number columns so the curves keep their room
+    const narrow = c.W < 800, L = narrow ? 128 : 230, Rm = narrow ? 104 : 210, x0 = L, x1 = c.W - Rm, top = 26, bot = c.H - 52;
     const rh = (bot - top) / M.length, X = v => x0 + (v - lo) / (hi - lo) * (x1 - x0);
+    const step = (x1 - x0) / (hi - lo) < 24 ? 4 : 2;
     let s = svgOpen(c.W, c.H);
-    for (let v = Math.ceil(lo / 2) * 2; v <= hi; v += 2) {
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
       s += `<line class="grid-l" x1="${X(v)}" y1="${top}" x2="${X(v)}" y2="${bot}"/>` + txt(X(v), bot + 26, v, 't-ax');
     }
     s += txt((x0 + x1) / 2, c.H - 4, 'RELEASE SPEED (MPH)', 't-axb');
@@ -638,8 +648,11 @@ const SS = (() => {
       const path = `M${X(lo)},${base_y} ` + pts.map(([v, d]) => `L${X(v).toFixed(1)},${(base_y - d / mx * amp).toFixed(1)}`).join(' ') + ` L${X(hi)},${base_y} Z`;
       s += `<g class="wipe" ${delay(i, 140)}><path d="${path}" fill="${pitchColor(m.pt)}" fill-opacity=".8" stroke="var(--ink)" stroke-width="2.5"/></g>`;
       s += `<line x1="${X(m.v)}" y1="${base_y}" x2="${X(m.v)}" y2="${base_y - amp * .95}" stroke="var(--ink)" stroke-width="2" stroke-dasharray="4 4"/>`;
-      s += `<rect x="16" y="${base_y - 30}" width="10" height="28" fill="${pitchColor(m.pt)}"/>` + txt(34, base_y - 8, esc(PITCH_SHORT[m.pt] || m.name), 't-head', 'start');
-      s += txt(x1 + 18, base_y - 8, `${m.v.toFixed(1)}`, 't-big', 'start', 'style="font-size:36px"') + txt(x1 + 102, base_y - 9, `TOP ${m.vmax.toFixed(1)}`, 't-axb', 'start');
+      const nm = esc(PITCH_SHORT[m.pt] || m.name);
+      s += `<rect x="${narrow ? 12 : 16}" y="${base_y - 30}" width="${narrow ? 8 : 10}" height="28" fill="${pitchColor(m.pt)}"/>` +
+        txt(narrow ? 26 : 34, base_y - 8, nm, 't-head', 'start', narrow ? `style="font-size:${nm.length > 9 ? 15 : 19}px"` : '');
+      if (narrow) s += txt(x1 + 12, base_y - 22, `${m.v.toFixed(1)}`, 't-big', 'start', 'style="font-size:32px"') + txt(x1 + 12, base_y - 2, `TOP ${m.vmax.toFixed(1)}`, 't-axb', 'start');
+      else s += txt(x1 + 18, base_y - 8, `${m.v.toFixed(1)}`, 't-big', 'start', 'style="font-size:36px"') + txt(x1 + 102, base_y - 9, `TOP ${m.vmax.toFixed(1)}`, 't-axb', 'start');
     });
     return s + '</svg>';
   }
@@ -887,8 +900,11 @@ const SS = (() => {
         `stroke-width="${hr ? 3.2 : cls === 'out' ? 1.4 : 2.2}" stroke-opacity="${hr ? .95 : cls === 'out' ? .35 : .75}"/>`;
     });
     const leg = [['home_run', 'HR'], ['triple', '3B'], ['double', '2B'], ['single', '1B'], ['out', 'OUT']];
-    let lx = 20; leg.forEach(([cls, lab]) => { s += `<line x1="${lx}" y1="26" x2="${lx + 26}" y2="26" stroke="${HIT_COLOR[cls]}" stroke-width="4"/>` + txt(lx + 32, 32, lab, 't-axb', 'start'); lx += 84; });
-    s += txt(pw - 20, 32, `${sf.lab} · HEIGHT NOT TO SCALE`, 't-axb', 'end') + '</svg>';
+    const tight = pw < 800, sp = tight ? 66 : 84;
+    let lx = 20; leg.forEach(([cls, lab]) => { s += `<line x1="${lx}" y1="26" x2="${lx + 22}" y2="26" stroke="${HIT_COLOR[cls]}" stroke-width="4"/>` + txt(lx + 28, 32, lab, 't-axb', 'start'); lx += sp; });
+    // at half width the caption drops under the legend instead of running into it
+    s += tight ? txt(20, 56, `${sf.lab} · HEIGHT NOT TO SCALE`, 't-axb', 'start', 'style="font-size:13px"') : txt(pw - 20, 32, `${sf.lab} · HEIGHT NOT TO SCALE`, 't-axb', 'end');
+    s += '</svg>';
     if (!wide) return s;
     const hr = B.filter(q => q.ev === 'home_run'), far = B.slice().sort((a, b) => b.dist - a.dist)[0];
     return s + `<div class="side" style="width:300px">` +
@@ -917,14 +933,17 @@ const SS = (() => {
     const v = c.me.val, sw = c.me.swing, sp = c.L.spread;
     if (v.avg_swing_speed == null && !sw) return empty(`No ${c.y} bat tracking`, 'Bat tracking starts in 2024 and needs a swing sample.');
     let s = svgOpen(c.W, c.H);
-    const r = Math.min(c.W / 6 - 34, (c.H - 60) * .25);
+    // half width (compare) stacks it: dials, then the four numbers, then the attack-angle drawing across the full width
+    const narrow = c.W < 800;
+    const r = narrow ? Math.min(c.W / 6 - 12, c.H * .13) : Math.min(c.W / 6 - 34, (c.H - 60) * .25);
     const row1 = 46 + r * 1.2;
     [[c.W / 6, pctOf(c, 'bat_speed'), f1(v.avg_swing_speed), 'MPH', 'BAT SPEED'], [c.W / 2, pctOf(c, 'swing_length'), f1(v.avg_swing_length), 'FEET', 'SWING LENGTH'],
       [c.W * 5 / 6, pctOf(c, 'squared_up_rate'), v.squared_up_contact != null ? v.squared_up_contact.toFixed(1) + '%' : '—', 'OF CONTACT', 'SQUARED-UP']]
       .forEach(([x, p, val, u, l]) => { s += dial(x, row1, r, p, val, u, l); });
     // attack angle, side view: the bat path rising through the ideal 5–20° window
     const aa = sw?.aa ?? (typeof v.attack_angle === 'number' ? v.attack_angle : null);
-    const y2 = row1 + 96, h2 = c.H - y2 - 16, ax = 30, aw = c.W * .5, gy = y2 + h2 - 12, len = Math.min(aw - 40, (h2 - 50) / Math.sin(26 * Math.PI / 180));
+    const tilesH = narrow ? 148 : 0, y2 = row1 + 96 + tilesH, h2 = c.H - y2 - 16, ax = 30, aw = narrow ? c.W - 60 : c.W * .5, gy = y2 + h2 - 12;
+    const len = Math.min(aw - 40, (h2 - 50) / Math.sin(26 * Math.PI / 180));
     const at = deg => [ax + Math.cos(deg * Math.PI / 180) * len, gy - Math.sin(deg * Math.PI / 180) * len];
     s += `<line class="axis-l" x1="${ax}" y1="${gy}" x2="${ax + aw}" y2="${gy}"/>`;
     s += `<path d="M${ax},${gy} L${at(5).join(',')} L${at(20).join(',')} Z" fill="rgba(29,127,69,.14)" stroke="rgba(29,127,69,.5)" stroke-width="2"/>`;
@@ -936,7 +955,7 @@ const SS = (() => {
       s += txt(ax, y2 + 14, `ATTACK ANGLE  ${aa.toFixed(1)}°`, 't-head', 'start', 'style="font-size:28px"');
     }
     // the four smaller numbers, 2 × 2
-    const tx = ax + aw + 50, tw = (c.W - tx - 26) / 2, th = h2 / 2;
+    const tx = narrow ? 24 : ax + aw + 50, tw = (c.W - tx - (narrow ? 4 : 26)) / 2, th = narrow ? tilesH / 2 : h2 / 2, ty = narrow ? row1 + 92 : y2;
     const tiles = [
       ['BLAST %', v.blasts_contact != null ? v.blasts_contact.toFixed(1) + '%' : '—', rankPct(sp.blasts, v.blasts_contact)],
       ['IDEAL ATTACK ANGLE', sw?.ideal != null ? Math.round(sw.ideal * 100) + '%' : '—', rankPct(sp.ideal, sw?.ideal)],
@@ -944,9 +963,10 @@ const SS = (() => {
       ['SWING PATH TILT', sw?.tilt != null ? sw.tilt.toFixed(0) + '°' : '—', null],
     ];
     tiles.forEach(([l, val, p], i) => {
-      const x = tx + (i % 2) * tw, y = y2 + Math.floor(i / 2) * th;
-      s += `<line class="grid-l" x1="${x}" y1="${y}" x2="${x + tw - 20}" y2="${y}"/>` + txt(x, y + 26, l, 't-axb', 'start') + txt(x, y + 70, val, 't-num', 'start', 'style="font-size:36px"');
-      if (p != null) s += `<rect x="${x + tw - 72}" y="${y + 42}" width="52" height="30" fill="${pctColor(p)}"/>` + txt(x + tw - 46, y + 64, p, 't-num', 'middle', 'style="fill:#fff;font-size:22px"');
+      const x = tx + (i % 2) * tw, y = ty + Math.floor(i / 2) * th, vy = narrow ? y + 60 : y + 70;
+      s += `<line class="grid-l" x1="${x}" y1="${y}" x2="${x + tw - 20}" y2="${y}"/>` + txt(x, y + 24, narrow ? l.replace('IDEAL ATTACK ANGLE', 'IDEAL AA %') : l, 't-axb', 'start') +
+        txt(x, vy, val, 't-num', 'start', `style="font-size:${narrow ? 30 : 36}px"`);
+      if (p != null) s += `<rect x="${x + tw - 72}" y="${vy - 26}" width="52" height="30" fill="${pctColor(p)}"/>` + txt(x + tw - 46, vy - 4, p, 't-num', 'middle', 'style="fill:#fff;font-size:22px"');
     });
     return s + '</svg>';
   }
