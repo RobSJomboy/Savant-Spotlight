@@ -22,14 +22,17 @@
 .hd.in { animation: slideIn .55s cubic-bezier(.3,1.2,.5,1); }
 @keyframes slideIn { from { transform: translateX(-40px); opacity: 0; } }
 .hd .half { flex: 1; min-width: 0; display: flex; position: relative; }
-.hd.duo .half + .half { border-left: 6px solid var(--gold); }
+.hd.duo .half + .half { border-left: 6px solid var(--gold); flex-direction: row-reverse; }   /* B mirrors: face out at the right edge */
+.hd.duo .half + .half .shot { border-right: 0; border-left: 6px solid var(--gold); }
+.hd.duo .half + .half .pid { text-align: right; padding: 16px 16px 0 14px; }
 .hd.duo .shot { flex-basis: 118px; }
 .hd.duo .pid { padding: 16px 14px 0 16px; }
 .hd.duo .nm { font-size: 44px; margin-top: 10px; }
 .hd.duo .nm.long { font-size: 36px; margin-top: 14px; }
 .hd.duo .meta { font-size: 18px; }
 .hd.duo .kick { font-size: 14px; }
-.hd.duo .logo { flex-basis: 64px; height: 64px; margin: 0 14px 0 4px; align-self: flex-start; margin-top: 14px; }
+.hd.duo .logo { flex-basis: 64px; height: 64px; margin: 14px 46px 0 4px; align-self: flex-start; }
+.hd.duo .half + .half .logo { margin: 14px 4px 0 46px; }
 .hd .vs { position: absolute; left: 50%; top: 50%; width: 62px; height: 62px; margin: -31px 0 0 -34px; background: var(--gold); color: var(--ink);
   font: 700 30px/62px var(--head); text-align: center; box-shadow: 4px 4px 0 rgba(15,39,66,.45); transform: rotate(-6deg); z-index: 2; }
 .stage.duo .lines { display: none; }

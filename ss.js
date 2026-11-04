@@ -654,14 +654,21 @@ const SS = (() => {
       ['FIRST PITCH', q => q.b === 0 && q.s === 0], ['AHEAD', q => q.s > q.b], ['EVEN', q => q.b === q.s && q.b + q.s > 0],
       ['BEHIND', q => q.b > q.s], ['TWO STRIKES', q => q.s === 2],
     ];
-    const L = 200, x0 = L, x1 = c.W - 90, top = 62, gap = 10;
-    const rh = (c.H - top - 20 - gap * (groups.length - 1)) / groups.length;
-    let s = svgOpen(c.W, c.H);
-    let lx = x0;
-    order.forEach(pt => { s += `<circle cx="${lx + 8}" cy="28" r="9" fill="${pitchColor(pt)}" stroke="var(--ink)" stroke-width="2"/>` + txt(lx + 24, 35, PITCH_SHORT[pt] || pt, 't-axb', 'start'); lx += 34 + (PITCH_SHORT[pt] || pt).length * 9.5; });
+    // half width (compare) gets a tighter label column, and the legend wraps instead of running into the other half
+    const narrow = c.W < 800, L = narrow ? 150 : 200, x0 = L, x1 = c.W - (narrow ? 64 : 90), gap = narrow ? 8 : 10, lfs = narrow ? 19 : 22;
+    let leg = '', lx = narrow ? 18 : x0, ly = 28;
+    order.forEach(pt => {
+      const name = PITCH_SHORT[pt] || pt, w = 34 + name.length * 9.5;
+      if (lx + w > c.W - 14 && lx > (narrow ? 18 : x0)) { lx = narrow ? 18 : x0; ly += 28; }
+      leg += `<circle cx="${lx + 8}" cy="${ly}" r="9" fill="${pitchColor(pt)}" stroke="var(--ink)" stroke-width="2"/>` + txt(lx + 24, ly + 7, name, 't-axb', 'start');
+      lx += w;
+    });
+    const top = ly + 34;
+    const rh = (c.H - top - 16 - gap * (groups.length - 1)) / groups.length;
+    let s = svgOpen(c.W, c.H) + leg;
     groups.forEach(([lab, f], i) => {
       const g = P.filter(f), y = top + i * (rh + gap);
-      s += txt(L - 16, y + rh / 2 + 8, lab, 't-head', 'end', 'style="font-size:22px"');
+      s += txt(L - 14, y + rh / 2 + 7, lab, 't-head', 'end', `style="font-size:${lfs}px"`);
       if (!g.length) return;
       let x = x0;
       s += `<g class="growx" ${delay(i, 90)}>`;
@@ -669,10 +676,10 @@ const SS = (() => {
         const share = g.filter(q => q.pt === pt).length / g.length, w = share * (x1 - x0);
         if (w <= 0) continue;
         s += `<rect x="${x.toFixed(1)}" y="${y}" width="${w.toFixed(1)}" height="${rh}" fill="${pitchColor(pt)}" stroke="var(--card)" stroke-width="2"/>`;
-        if (w > 58) s += txt(x + w / 2, y + rh / 2 + 9, `${Math.round(share * 100)}%`, 't-num', 'middle', `style="font-size:${clamp(rh * .5, 18, 28)}px;fill:#fff;paint-order:stroke;stroke:rgba(0,0,0,.35);stroke-width:3px"`);
+        if (w > (narrow ? 46 : 58)) s += txt(x + w / 2, y + rh / 2 + 9, `${Math.round(share * 100)}%`, 't-num', 'middle', `style="font-size:${clamp(rh * .5, 18, 28)}px;fill:#fff;paint-order:stroke;stroke:rgba(0,0,0,.35);stroke-width:3px"`);
         x += w;
       }
-      s += '</g>' + txt(x1 + 12, y + rh / 2 + 7, g.length.toLocaleString(), 't-axb', 'start');
+      s += '</g>' + txt(x1 + 10, y + rh / 2 + 7, g.length.toLocaleString(), 't-axb', 'start');
     });
     return s + '</svg>';
   }
@@ -1083,7 +1090,7 @@ const SS = (() => {
     const panel = $('.panel'), hd = $('.hd'), ln = $('.lines'), vt = $('.vt'), body = $('.body');
     let token = 0, bodyTok = 0, hdKey = '', lnKey = '', bodyKey = '';
 
-    function half(p, role) {
+    function half(p, role, duo) {
       const t = team(p.teamId), was = p.fa ? team(p.fa.to || p.fa.from) : null;
       const pos = role === 'pit' ? (p.throws ? `${p.throws}HP` : 'P') : (p.pos || '');
       const kick = p.fa ? (p.fa.to ? `<span class="fa">SIGNED</span>${esc(team(p.fa.to)?.name || '')}` : `<span class="fa">FREE AGENT</span>${was ? 'LAST: ' + esc(was.name) : ''}`)
@@ -1092,12 +1099,12 @@ const SS = (() => {
       const lg = p.fa ? (p.fa.to || p.fa.from) : p.teamId;
       const meta = [pos, p.age ? `AGE ${p.age}` : '', p.bats ? `B/T ${p.bats}/${p.throws}` : '', p.num ? `#${p.num}` : ''].filter(Boolean).join(' · ');
       return `<div class="half" style="--tc:${tc}"><div class="shot"><img src="${headshot(p.id)}" alt=""></div><div class="pid"><div class="kick">${kick}</div>` +
-        `<div class="nm${p.name.length > 19 ? ' long' : ''}">${esc(p.name)}</div><div class="meta">${esc(meta)}</div></div>` +
+        `<div class="nm${!duo && p.name.length > 19 ? ' long' : ''}"${duo ? ` style="font-size:${Math.min(44, Math.floor(300 / (p.name.length * .55)))}px"` : ''}>${esc(p.name)}</div><div class="meta">${esc(meta)}</div></div>` +
         (lg ? `<img class="logo${p.fa && !p.fa.to ? ' was' : ''}" src="${logo(lg)}" alt="">` : '') + '</div>';
     }
     function header(p, role, p2, role2) {
       hd.classList.toggle('duo', !!p2);
-      hd.innerHTML = half(p, role) + (p2 ? half(p2, role2) + '<div class="vs">VS</div>' : '');
+      hd.innerHTML = half(p, role, !!p2) + (p2 ? half(p2, role2, true) + '<div class="vs">VS</div>' : '');
       hd.classList.remove('in'); void hd.offsetWidth; hd.classList.add('in');
     }
     // Auto-cycle walks the chosen graphics on a clock both screens share (S.cycle.t0)
