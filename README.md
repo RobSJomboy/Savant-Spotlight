@@ -19,6 +19,11 @@ MLB StatsAPI. **Auto-rotate** flips season ↔ career (optionally season by seas
 or 15 seconds, with a gold timer bar; the display keeps the clock, so it rotates even if the control
 page is closed.
 
+**Auto-cycle:** tick it to step through the graphics on a timer (10 seconds by default, 3–120). The
+"in the loop" checkboxes pick which graphics it walks; the one on air gets a red dot in the control
+page. Clicking a graphic while it's cycling jumps the loop there. Like the stats rotation, the display
+keeps the clock and preloads every graphic in the loop, so each one lands without a spinner.
+
 **Compare:** tick Compare, then the list fills slot A or B (⇄ swaps). Two headers with a VS badge;
 Percentiles/Overview become a mirrored head-to-head card, Stats becomes a tale of the tape (gold =
 better), and every other graphic runs side by side. A pitcher vs a hitter works too — each half shows

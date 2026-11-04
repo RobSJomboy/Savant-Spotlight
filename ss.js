@@ -1061,6 +1061,16 @@ const SS = (() => {
   };
   const viewOf = (role, key) => VIEWS[role].find(v => v.key === key) || VIEWS[role][0];
 
+  // auto-cycle: which graphic is up right now, from the shared clock
+  function cycleInfo(S, role) {
+    const C = S.cycle; if (!C || !C.on) return null;
+    const all = VIEWS[role].map(v => v.key), keys = (C.views?.[role] || all).filter(k => all.includes(k));
+    if (keys.length < 2) return null;
+    const ms = clamp(+C.secs || 10, 3, 300) * 1000, n = keys.length, span = ms * n;
+    const t = ((Date.now() - (C.t0 || 0)) % span + span) % span, i = Math.floor(t / ms);
+    return { key: keys[i], i, keys, ms, next: ms - (t - i * ms) };
+  }
+
   // ════════════════════════════════════════════════════════════════════
   //  STAGE — header + stat lines + one view, inside the safe area
   // ════════════════════════════════════════════════════════════════════
@@ -1090,6 +1100,7 @@ const SS = (() => {
       hd.innerHTML = half(p, role) + (p2 ? half(p2, role2) + '<div class="vs">VS</div>' : '');
       hd.classList.remove('in'); void hd.offsetWidth; hd.classList.add('in');
     }
+    // Auto-cycle walks the chosen graphics on a clock both screens share (S.cycle.t0)
     // Stats can flip between season / career (/ every season) on a clock both screens share (S.rot.t0)
     function statMode(S, view) {
       const R = S.rot, o = S.opts || {};
@@ -1099,7 +1110,7 @@ const SS = (() => {
       const i = Math.floor(el_ / ms), at = el_ - i * ms;
       return { mode: modes[i], rot: { ms, at, next: ms - at } };
     }
-    let last = null, rotT = 0;
+    let last = null, rotT = 0, warmed = '';
 
     async function render(S) {
       last = S; clearTimeout(rotT);
@@ -1118,13 +1129,25 @@ const SS = (() => {
       const [p, p2] = await Promise.all([ensure(S.id), cmp ? ensure(S.id2) : null]);
       if (my !== token || !p) return;
       const two = !!(cmp && p2);
-      const role = S.role || p.role, y = S.year || SEASON, view = viewOf(role, S.view), o = S.opts || {};
+      const role = S.role || p.role, y = S.year || SEASON, o = S.opts || {};
+      const cyc = cycleInfo(S, role), view = viewOf(role, cyc ? cyc.key : S.view);
       const role2 = two ? (S.role2 || p2.role) : null, y2 = two ? (S.year2 || y) : null;
       // the second player shows the same graphic if his role has it, his card if not
       const view2 = two ? (VIEWS[role2].find(v => v.key === view.key) || viewOf(role2, 'card')) : null;
       el.classList.toggle('duo', two);
       const { mode, rot } = statMode(S, view);
-      if (rot) rotT = setTimeout(() => last && render(last), rot.next + 40);
+      const next = [rot?.next, cyc?.next].filter(v => v != null);
+      if (next.length) rotT = setTimeout(() => last && render(last), Math.min(...next) + 40);
+      // cycling: pull everything the loop will need now, so each graphic lands without a spinner
+      const wk = cyc ? JSON.stringify([p.id, role, y, two ? [p2.id, role2, y2] : 0, cyc.keys]) : '';
+      if (cyc && wk !== warmed) {
+        warmed = wk;
+        const warm = (id, r, yy) => cyc.keys.map(k => VIEWS[r].find(v => v.key === k)).filter(Boolean).forEach(v => {
+          (v.career ? careerData(id, r) : league(yy)).catch(() => {});
+          if (v.pitches) pitches(id, r, yy).catch(() => {});
+        });
+        warm(p.id, role, y); if (two) warm(p2.id, role2, y2);
+      }
       const hk = `${p.id}|${role}|${p.name}|${p.fa ? 1 : 0}|${two ? `${p2.id}|${role2}|${p2.fa ? 1 : 0}` : ''}`;
       if (hk !== hdKey) { hdKey = hk; header(p, role, two ? p2 : null, role2); }
       const lk = two ? 'duo' : `${p.id}|${role}|${y}`;
@@ -1223,5 +1246,5 @@ const SS = (() => {
   }
 
   return { SEASON, FIRST_YEAR, SAFE_DEFAULT, CAMS, DB, TEAMS, team, headshot, logo, load, ensure, search, league, leagueRec, cardCount, lines, pitches,
-    VIEWS, viewOf, LOC_FILTER, SPRAY_FILTER, ZONE_METRIC, createStage, pctColor, esc, hubOf, publisher, subscribe };
+    VIEWS, viewOf, cycleInfo, LOC_FILTER, SPRAY_FILTER, ZONE_METRIC, createStage, pctColor, esc, hubOf, publisher, subscribe };
 })();

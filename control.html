@@ -73,6 +73,11 @@
   .who .n { font: 700 24px/1 var(--head); text-transform: uppercase; }
   .who .m { font: 500 15px var(--cond); color: var(--dim); margin-top: 3px; }
   .help { font: 500 14px var(--cond); color: var(--dim); }
+  #views button.live { box-shadow: inset 0 -4px 0 var(--red); }
+  #views button.live::after { content: ' ●'; color: var(--red); }
+  .cycList { display: flex; flex-wrap: wrap; gap: 4px 12px; flex: 1 1 100%; }
+  .cycList label { font-size: 14px; }
+  body:not(.cycling) .cycList, body:not(.cycling) #cycHelp { display: none; }
   .opt[hidden], .cmp[hidden] { display: none !important; }
   .cmp { display: inline-flex; gap: 4px; }
   .cmp button { max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
@@ -121,6 +126,11 @@
         <span class="k">graphic</span>
         <div id="views"></div>
       </div>
+      <div class="bar">
+        <label><input type="checkbox" id="cyc"> Auto-cycle graphics every <input type="number" id="cycSecs" min="3" max="120" step="1"> sec</label>
+        <span class="help" id="cycHelp">Steps through the graphics ticked below, then starts over.</span>
+        <div id="cycList" class="cycList"></div>
+      </div>
       <div class="bar" id="optsBar">
         <span class="k">filters</span>
         <label class="opt" id="o-side">Opponent <select id="side"><option value="all">Everyone</option><option value="L">Lefties</option><option value="R">Righties</option></select></label>
@@ -163,11 +173,12 @@
   // ── state ──
   const DEF = { room: 'tb-savant-' + Math.random().toString(36).slice(2, 7), on: false, id: null, role: 'pit', view: 'overview', year: 'auto', yearUsed: SS.SEASON,
     opts: { side: 'all', loc: 'all', spray: 'all', zm: 'xwoba', stat: 'season' }, compare: false, id2: null, role2: 'pit', year2Used: SS.SEASON, slot: 'A',
-    rot: { on: false, secs: 12, years: false, t0: 0 }, lines: true, bg: 'paper', safe: Object.assign({}, SS.SAFE_DEFAULT), guides: true,
+    rot: { on: false, secs: 12, years: false, t0: 0 }, cycle: { on: false, secs: 10, t0: 0, views: { pit: null, bat: null } }, lines: true, bg: 'paper', safe: Object.assign({}, SS.SAFE_DEFAULT), guides: true,
     pool: { scope: 'all', role: 'pit', team: '', sort: 'pt' } };
   let S;
   try { S = Object.assign({}, DEF, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { S = Object.assign({}, DEF); }
-  S.opts = Object.assign({}, DEF.opts, S.opts); S.rot = Object.assign({}, DEF.rot, S.rot); S.pool = Object.assign({}, DEF.pool, S.pool); S.safe = Object.assign({}, DEF.safe, S.safe);
+  S.opts = Object.assign({}, DEF.opts, S.opts); S.rot = Object.assign({}, DEF.rot, S.rot);
+  S.cycle = Object.assign({}, DEF.cycle, S.cycle); S.cycle.views = Object.assign({}, DEF.cycle.views, S.cycle.views); S.pool = Object.assign({}, DEF.pool, S.pool); S.safe = Object.assign({}, DEF.safe, S.safe);
   if (params.get('room')) S.room = params.get('room');
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(S)); } catch {} };
 
@@ -192,7 +203,7 @@
   const net = (t, c) => { $('net').textContent = t; $('net').className = 'status ' + c; };
   const send = SS.publisher(HUB, () => S.room, net);
   const wire = () => ({ app: 'ss', seq: Date.now(), on: S.on, id: S.id, role: S.role, view: S.view, year: S.yearUsed, opts: S.opts, lines: S.lines, bg: S.bg, safe: S.safe,
-    compare: S.compare && !!S.id2, id2: S.id2, role2: S.role2, year2: S.year2Used, rot: S.rot });
+    compare: S.compare && !!S.id2, id2: S.id2, role2: S.role2, year2: S.year2Used, rot: S.rot, cycle: S.cycle });
   let pubT = 0;
   function commit() {
     save(); draw();
@@ -314,6 +325,11 @@
     $('o-stat').hidden = !v.career; $('o-rot').hidden = !v.career; $('o-roty').hidden = !(v.career && S.rot.on);
     $('stat').value = S.opts.stat; $('stat').disabled = S.rot.on;
     $('rot').checked = S.rot.on; $('rotSecs').value = String(S.rot.secs); $('rotYears').checked = S.rot.years;
+    document.body.classList.toggle('cycling', S.cycle.on);
+    $('cyc').checked = S.cycle.on; $('cycSecs').value = S.cycle.secs;
+    const inLoop = S.cycle.views[S.role] || views.map(x => x.key);
+    $('cycList').innerHTML = '<span class="k">in the loop</span>' + views.map(x => `<label><input type="checkbox" data-k="${x.key}"${inLoop.includes(x.key) ? ' checked' : ''}> ${x.name}</label>`).join('');
+    markLive();
     $('noOpts').hidden = !!(v.side || v.loc || v.spray || v.zm || v.career);
     $('side').options[1].text = S.role === 'pit' ? 'Left-handed hitters' : 'Left-handed pitchers';
     $('side').options[2].text = S.role === 'pit' ? 'Right-handed hitters' : 'Right-handed pitchers';
@@ -324,7 +340,27 @@
     drawGuides();
     stage.render(Object.assign(wire(), { on: true }));
   }
-  const setView = k => { if (k === 'stats' && S.view !== 'stats') S.rot.t0 = Date.now(); S.view = k; commit(); };
+  // cycle clock: t0 is set so the loop is on graphic i right now
+  const cyc = () => SS.cycleInfo(S, S.role);
+  const alignCycle = k => { const c = cyc(); if (!c) return; const i = c.keys.indexOf(k); S.cycle.t0 = Date.now() - Math.max(0, i) * c.ms; };
+  function markLive() {
+    const c = cyc();
+    document.querySelectorAll('#views button').forEach(b => b.classList.toggle('live', !!c && b.dataset.v === c.key));
+  }
+  setInterval(markLive, 250);
+  const setView = k => { if (k === 'stats' && S.view !== 'stats') S.rot.t0 = Date.now(); S.view = k; alignCycle(k); commit(); };
+  $('cyc').onchange = () => { S.cycle.on = $('cyc').checked; alignCycle(S.view); commit(); };
+  $('cycSecs').onchange = () => {
+    const live = cyc()?.key || S.view;
+    S.cycle.secs = Math.max(3, Math.min(120, Math.round(+$('cycSecs').value) || 10));
+    alignCycle(live); commit();
+  };
+  $('cycList').onchange = e => {
+    const live = cyc()?.key || S.view;
+    const keys = [...$('cycList').querySelectorAll('input:checked')].map(i => i.dataset.k);
+    S.cycle.views[S.role] = keys.length === SS.VIEWS[S.role].length ? null : keys;
+    alignCycle(keys.includes(live) ? live : keys[0]); commit();
+  };
   $('views').onclick = e => { const b = e.target.closest('button'); if (b) setView(b.dataset.v); };
   $('stat').onchange = () => { S.opts.stat = $('stat').value; commit(); };
   $('rot').onchange = () => { S.rot.on = $('rot').checked; S.rot.t0 = Date.now(); commit(); };
