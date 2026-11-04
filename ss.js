@@ -312,6 +312,81 @@ const SS = (() => {
       row(String(y), L.season, L.sabermetrics) + row('CAREER', L.career, null) + '</table>';
   }
 
+  // ── season by season + career (StatsAPI). WAR only comes one season per call, so career WAR is their sum ──
+  const CAREER = {};
+  function careerData(id, role) {
+    const k = id + '|' + role;
+    if (CAREER[k]) return CAREER[k];
+    const g = role === 'pit' ? 'pitching' : 'hitting';
+    CAREER[k] = (async () => {
+      const d = await getJSON(`${API}/people/${id}?hydrate=stats(group=[${g}],type=[yearByYear,career])`);
+      const by = {}; let total = null;
+      for (const s of d.people?.[0]?.stats || []) {
+        if (s.type.displayName === 'career') total = pickSplit(s)?.stat || null;
+        if (s.type.displayName !== 'yearByYear') continue;
+        for (const sp of s.splits) {
+          const y = +sp.season, cur = by[y];
+          // a traded season has one row per club plus a combined row with no team — the combined row wins
+          const ab = sp.team ? team(sp.team.id)?.abbr || sp.team.abbreviation || '' : null;
+          const tms = cur ? cur.tms : [];
+          if (ab && !tms.includes(ab)) tms.push(ab);
+          if (!sp.team || !cur) by[y] = Object.assign(cur || {}, { y, st: !sp.team || !cur ? sp.stat : cur.st, combined: !sp.team || cur?.combined, tms });
+          by[y].tm = tms.length > 2 ? `${tms.length} TEAMS` : tms.join('/') || `${sp.numTeams || 2} TEAMS`;
+        }
+      }
+      const years = Object.values(by).sort((a, b) => a.y - b.y);
+      await Promise.all(years.map(r => getJSON(`${API}/people/${id}/stats?stats=sabermetrics&group=${g}&season=${r.y}`)
+        .then(x => { const st = pickSplit(x.stats?.[0])?.stat; r.war = st?.war ?? null; r.fip = st?.fip ?? null; r.wrc = st?.wRcPlus ?? null; }).catch(() => {})));
+      const wars = years.map(r => r.war).filter(v => v != null);
+      return { years, total, war: wars.length ? wars.reduce((a, b) => a + b, 0) : null };
+    })().catch(e => { delete CAREER[k]; throw e; });
+    return CAREER[k];
+  }
+  // every stat the Stats graphic, the year table and the tale of the tape can show
+  const ipNum = v => { const n = num(v); if (n == null) return null; const w = Math.trunc(n); return w + Math.round((n - w) * 10) / 3; };
+  const ipFmt = v => { const w = Math.trunc(v + 1e-9); return `${w}.${Math.round((v - w) * 3)}`; };
+  const STAT = {
+    wl:   { lab: 'W-L', get: s => s.wins != null ? `${s.wins}-${s.losses}` : null },
+    era:  { lab: 'ERA', get: s => num(s.era), fmt: v => v.toFixed(2), dir: -1, rate: 1 },
+    g:    { lab: 'G', get: s => s.gamesPlayed },
+    gs:   { lab: 'GS', get: s => s.gamesStarted },
+    ip:   { lab: 'IP', get: s => ipNum(s.inningsPitched), fmt: ipFmt, dir: 1 },
+    so:   { lab: 'SO', get: s => s.strikeOuts, dir: 1 },
+    bbp:  { lab: 'BB', get: s => s.baseOnBalls },
+    whip: { lab: 'WHIP', get: s => num(s.whip), fmt: v => v.toFixed(2), dir: -1, rate: 1 },
+    k9:   { lab: 'K/9', get: s => num(s.strikeoutsPer9Inn), fmt: v => v.toFixed(1), dir: 1, rate: 1 },
+    bb9:  { lab: 'BB/9', get: s => num(s.walksPer9Inn), fmt: v => v.toFixed(1), dir: -1, rate: 1 },
+    sv:   { lab: 'SV', get: s => s.saves, dir: 1 },
+    pa:   { lab: 'PA', get: s => s.plateAppearances },
+    avg:  { lab: 'AVG', get: s => num(s.avg), fmt: f3, dir: 1, rate: 1 },
+    obp:  { lab: 'OBP', get: s => num(s.obp), fmt: f3, dir: 1, rate: 1 },
+    slg:  { lab: 'SLG', get: s => num(s.slg), fmt: f3, dir: 1, rate: 1 },
+    ops:  { lab: 'OPS', get: s => num(s.ops), fmt: f3, dir: 1, rate: 1 },
+    h:    { lab: 'H', get: s => s.hits, dir: 1 },
+    hr:   { lab: 'HR', get: s => s.homeRuns, dir: 1 },
+    rbi:  { lab: 'RBI', get: s => s.rbi, dir: 1 },
+    sb:   { lab: 'SB', get: s => s.stolenBases, dir: 1 },
+    war:  { lab: 'WAR', war: 1, fmt: v => v.toFixed(1), dir: 1 },
+  };
+  const statVal = (k, st, war) => { if (STAT[k].war) return war ?? null; if (!st) return null; const v = STAT[k].get(st); return v === undefined ? null : v; };
+  const statFmt = (k, v) => v == null ? '—' : STAT[k].fmt ? STAT[k].fmt(v) : String(v);
+  const closer = CD => (num(CD?.total?.saves) || 0) >= 20;
+  const TILE_KEYS = (role, CD) => role === 'pit' ? ['wl', 'era', 'g', closer(CD) ? 'sv' : 'gs', 'ip', 'so', 'whip', 'k9', 'bb9', 'war'] : ['g', 'avg', 'obp', 'slg', 'ops', 'h', 'hr', 'rbi', 'sb', 'war'];
+  const YEAR_KEYS = { pit: ['wl', 'era', 'g', 'gs', 'ip', 'so', 'bbp', 'whip', 'war'], bat: ['g', 'pa', 'avg', 'obp', 'slg', 'ops', 'hr', 'rbi', 'sb', 'war'] };
+  const YEAR_KEYS_NARROW = { pit: ['era', 'ip', 'so', 'whip', 'war'], bat: ['avg', 'ops', 'hr', 'sb', 'war'] };
+  // rate stats only count toward a career best in a real season
+  const fullSeason = (role, st) => role === 'pit' ? (ipNum(st?.inningsPitched) || 0) >= 40 : (st?.plateAppearances || 0) >= 200;
+  function careerBest(role, CD, k) {
+    const S = STAT[k]; if (!S.dir || !CD || CD.years.length < 3) return null;
+    let best = null;
+    for (const r of CD.years) {
+      if (S.rate && !fullSeason(role, r.st)) continue;
+      const v = statVal(k, r.st, r.war); if (v == null) continue;
+      if (best == null || (S.dir > 0 ? v > best : v < best)) best = v;
+    }
+    return best;
+  }
+
   // ════════════════════════════════════════════════════════════════════
   //  EVERY PITCH — Statcast search for one player and season (~1–2MB, cached)
   // ════════════════════════════════════════════════════════════════════
@@ -395,8 +470,10 @@ const SS = (() => {
       const p = rankPct(c.L.dist[pt]?.[key], v, lowerBetter);
       return `<div><span class="pill" style="background:${p == null ? '#8996a3' : pctColor(p)}">${fmt(v)}</span></div>`;
     };
-    const head = ['PITCH', 'USAGE', 'MPH', 'SPIN', 'IVB', 'ARM-SIDE HB', 'WHIFF %', 'PUT AWAY %', 'xwOBA', 'RUN VALUE /100'];
-    let h = `<div class="ars" style="grid-auto-rows:${rh.toFixed(1)}px;grid-template-rows:38px">` +
+    // half width (compare) keeps the five columns that matter most
+    const narrow = c.W < 800;
+    const head = narrow ? ['PITCH', 'USAGE', 'MPH', 'WHIFF %', 'RV /100'] : ['PITCH', 'USAGE', 'MPH', 'SPIN', 'IVB', 'ARM-SIDE HB', 'WHIFF %', 'PUT AWAY %', 'xwOBA', 'RUN VALUE /100'];
+    let h = `<div class="ars" style="grid-auto-rows:${rh.toFixed(1)}px;grid-template-rows:38px${narrow ? ';grid-template-columns:200px 1fr repeat(3, 78px);inset:14px 12px' : ''}">` +
       head.map((t, i) => `<div class="h${i < 2 ? ' l' : ''}">${t}</div>`).join('');
     const umax = Math.max(...M.map(m => m.share));
     M.forEach((m, i) => {
@@ -404,9 +481,9 @@ const SS = (() => {
       const hbArm = m.hb == null ? null : m.hb * 12 * hand;
       h += `<div class="pn"><i style="background:${col}"></i><div>${esc(PITCH_SHORT[m.pt] || m.name)}<small>${m.n.toLocaleString()} PITCHES</small></div></div>` +
         `<div class="use" style="--i:${i}"><em style="width:${(m.share / umax * 100 * .72).toFixed(1)}%;background:${col}"></em><b>${(m.share * 100).toFixed(1)}%</b></div>` +
-        `<div>${f1(m.v)}</div><div>${m.spin == null ? '—' : Math.round(m.spin).toLocaleString()}</div>` +
-        `<div>${m.ivb == null ? '—' : (m.ivb * 12).toFixed(1) + '"'}</div><div>${hbArm == null ? '—' : hbArm.toFixed(1) + '"'}</div>` +
-        pill(a.whiff, m.pt, 'whiff', f1) + pill(a.putaway, m.pt, 'putaway', f1) + pill(a.xwoba, m.pt, 'xwoba', f3, true) +
+        `<div>${f1(m.v)}</div>` + (narrow ? '' : `<div>${m.spin == null ? '—' : Math.round(m.spin).toLocaleString()}</div>` +
+        `<div>${m.ivb == null ? '—' : (m.ivb * 12).toFixed(1) + '"'}</div><div>${hbArm == null ? '—' : hbArm.toFixed(1) + '"'}</div>`) +
+        pill(a.whiff, m.pt, 'whiff', f1) + (narrow ? '' : pill(a.putaway, m.pt, 'putaway', f1) + pill(a.xwoba, m.pt, 'xwoba', f3, true)) +
         pill(a.rv100, m.pt, 'rv100', v => (v > 0 ? '+' : '') + v.toFixed(1));
     });
     return h + '</div>';
@@ -875,6 +952,91 @@ const SS = (() => {
     return `<div class="sub" style="left:0;width:${lw}px">${card}</div><div class="sub" style="left:${lw}px;width:${c.W - lw}px;border-left:2px solid var(--rule)">${right}</div>`;
   }
 
+  // ── stats: one season, the career, or every season ──
+  const STAT_MODES = { season: 'Season', career: 'Career', years: 'Season by season' };
+  function rotBar(c) {
+    if (!c.rot) return '';
+    return `<div class="rotbar"><i style="animation-duration:${c.rot.ms}ms;animation-delay:-${c.rot.at}ms"></i></div>`;
+  }
+  function statBanner(c, mode, CD) {
+    if (mode === 'career') {
+      const ys = CD.years.map(r => r.y);
+      return `<div class="sbn"><b>CAREER</b><span>${ys.length ? `${ys[0]}–${ys[ys.length - 1]} · ${ys.length} SEASON${ys.length === 1 ? '' : 'S'}` : ''}</span></div>`;
+    }
+    const r = CD.years.find(x => x.y === c.y);
+    return `<div class="sbn"><b>${c.y} SEASON</b><span>${r ? esc(r.tm) : ''}</span></div>`;
+  }
+  function vStats(c) {
+    const CD = c.CD, mode = c.mode || 'season';
+    if (!CD || (!CD.years.length && !CD.total)) return empty('No MLB stats on record');
+    if (mode === 'years') return yearTable(c, CD) + rotBar(c);
+    const row = CD.years.find(x => x.y === c.y);
+    const st = mode === 'career' ? CD.total : row?.st, war = mode === 'career' ? CD.war : row?.war;
+    if (!st) return empty(`No ${c.y} MLB stats`, 'Pick another season, or switch to career.');
+    const keys = TILE_KEYS(c.role, CD), cols = c.W > 800 ? 5 : 3, rows = Math.ceil(keys.length / cols);
+    const th = (c.H - 96 - (rows - 1) * 12) / rows, fs = clamp(th * .5, 34, 84);
+    return statBanner(c, mode, CD) + `<div class="tiles" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},${th.toFixed(0)}px)">` +
+      keys.map((k, i) => {
+        const v = statVal(k, st, war), best = mode === 'season' && (!STAT[k].rate || fullSeason(c.role, st)) ? careerBest(c.role, CD, k) : null;
+        const top = best != null && v != null && v === best;
+        return `<div class="tile${top ? ' top' : ''}" style="--i:${i}"><span>${STAT[k].lab}</span><b style="font-size:${fs.toFixed(0)}px">${statFmt(k, v)}</b>${top ? '<em>CAREER BEST</em>' : ''}</div>`;
+      }).join('') + '</div>' + rotBar(c);
+  }
+  function yearTable(c, CD, narrowKeys) {
+    const keys = narrowKeys || (c.W < 800 ? YEAR_KEYS_NARROW : YEAR_KEYS)[c.role];
+    // rows draw 40px (38 + rule); keep the header, the career row and the footnote clear of the bottom
+    const rh = 40, fit = Math.max(3, Math.floor((c.H - 12 - 32 - rh - 34) / rh));
+    const years = CD.years.slice(-fit), cut = CD.years.length - years.length;
+    const bests = Object.fromEntries(keys.map(k => [k, careerBest(c.role, CD, k)]));
+    const cell = (k, r) => {
+      const v = statVal(k, r.st, r.war), b = bests[k], ok = !STAT[k].rate || fullSeason(c.role, r.st);
+      return `<td${b != null && ok && v === b ? ' class="best"' : ''}>${statFmt(k, v)}</td>`;
+    };
+    return `<table class="yrs"><tr><th class="yr">YEAR</th><th class="tm">TEAM</th>${keys.map(k => `<th>${STAT[k].lab}</th>`).join('')}</tr>` +
+      years.map((r, i) => `<tr style="--i:${i}"${r.y === c.y ? ' class="cur"' : ''}><td class="yr">${r.y}</td><td class="tm">${esc(r.tm)}</td>${keys.map(k => cell(k, r)).join('')}</tr>`).join('') +
+      `<tr class="car"><td class="yr">CAREER</td><td class="tm">${cut ? `+${cut} YRS` : ''}</td>${keys.map(k => `<td>${statFmt(k, statVal(k, CD.total, CD.war))}</td>`).join('')}</tr></table>` +
+      `<div class="estnote" style="bottom:8px">Gold = career best${c.role === 'pit' ? ' (rates need 40+ IP)' : ' (rates need 200+ PA)'}</div>`;
+  }
+
+  // ── compare: the tale of the tape ──
+  function vTape(a, b, mode) {
+    const pick = c => mode === 'career' ? [c.CD.total, c.CD.war] : (r => [r?.st, r?.war])(c.CD.years.find(x => x.y === c.y));
+    const [sa, wa] = pick(a), [sb, wb] = pick(b);
+    if (!sa && !sb) return empty('No stats to compare');
+    const keys = TILE_KEYS(a.role, a.CD).map(k => k === 'gs' && closer(b.CD) ? 'sv' : k);
+    const lab = c => esc(c.p.name.replace(/ (Jr\.|Sr\.|II|III|IV)$/, '').split(' ').slice(-1)[0].toUpperCase()) + (mode !== 'career' && a.y !== b.y ? ` <small>${c.y}</small>` : '');
+    const rh = (a.H - 80) / keys.length, fs = clamp(rh * .62, 22, 40);
+    return `<div class="tape-hd"><b>${lab(a)}</b><span>${mode === 'career' ? 'CAREER' : a.y === b.y ? a.y + ' SEASON' : 'SEASON'}</span><b>${lab(b)}</b></div>` +
+      `<div class="tape" style="grid-template-rows:repeat(${keys.length},${rh.toFixed(1)}px);--fs:${fs.toFixed(0)}px">` + keys.map((k, i) => {
+        const va = statVal(k, sa, wa), vb = statVal(k, sb, wb), d = STAT[k].dir;
+        // counting stats only crown a winner when both have a number; equal is a push
+        const win = d && va != null && vb != null && va !== vb ? ((va > vb) === (d > 0) ? 'a' : 'b') : '';
+        return `<div class="tv${win === 'a' ? ' win' : ''}" style="--i:${i}">${statFmt(k, va)}</div><div class="tl">${STAT[k].lab}</div><div class="tv r${win === 'b' ? ' win' : ''}" style="--i:${i}">${statFmt(k, vb)}</div>`;
+      }).join('') + '</div>';
+  }
+  // ── compare: Savant's card mirrored, one player each way ──
+  function vH2H(a, b) {
+    const ma = Object.fromEntries(cardRows(a.L, a.role, a.p.id).map(x => [x.r.k, x])), mb = Object.fromEntries(cardRows(b.L, b.role, b.p.id).map(x => [x.r.k, x]));
+    const rows = ROWS[a.role].filter(r => ma[r.k] || mb[r.k]);
+    if (!rows.length) return empty('No percentile cards to compare');
+    const rh = clamp((a.H - 40) / rows.length, 26, 58), fs = clamp(rh * .46, 16, 25), bd = clamp(rh * .74, 26, 44);
+    const side = (x, c, r, s, win) => {
+      if (!x) return `<div class="ht ${s}"></div>`;
+      const w = clamp(x.p, 1, 100), col = pctColor(x.p);
+      return `<div class="ht ${s}${win ? ' win' : ''}"><i style="width:${w}%;background:${col}"></i><b style="${s === 'l' ? 'right' : 'left'}:${w}%;background:${col}">${x.p}</b></div>`;
+    };
+    const val = (x, c, r) => x && r.val ? FMT[r.f](c.me.val[r.val] ?? null) : '';
+    return `<div class="h2h" style="grid-template-rows:repeat(${rows.length},${rh.toFixed(1)}px);--fs:${fs.toFixed(1)}px;--bd:${bd.toFixed(0)}px">` + rows.map((r, i) => {
+      const A = ma[r.k], B = mb[r.k], wa = A && B && A.p > B.p, wb = A && B && B.p > A.p;
+      return `<div class="hv" style="--i:${i}">${esc(val(A, a, r))}</div>${side(A, a, r, 'l', wa)}<div class="hl">${esc(r.lab)}${(A?.est || B?.est) ? '<sup>*</sup>' : ''}</div>${side(B, b, r, 'r', wb)}<div class="hv r">${esc(val(B, b, r))}</div>`;
+    }).join('') + '</div>';
+  }
+  function halves(a, b, fa, fb) {
+    const w = Math.floor(a.W / 2);
+    return `<div class="sub" style="left:0;width:${w}px">${fa(Object.assign({}, a, { W: w }))}</div>` +
+      `<div class="sub" style="left:${w}px;width:${a.W - w}px;border-left:3px solid var(--ink)">${fb(Object.assign({}, b, { W: a.W - w }))}</div>`;
+  }
+
   const VIEWS = {
     pit: [
       { key: 'overview', name: 'Overview', title: 'Savant snapshot', pitches: true, fn: vOverview },
@@ -884,6 +1046,7 @@ const SS = (() => {
       { key: 'locations', name: 'Locations', title: 'Pitch locations', pitches: true, fn: vLocations, side: 1, loc: 1 },
       { key: 'velo', name: 'Velocity', title: 'Velocity by pitch', pitches: true, fn: vVelo, side: 1 },
       { key: 'counts', name: 'Mix by count', title: 'Pitch mix by count', pitches: true, fn: vCounts },
+      { key: 'stats', name: 'Stats', title: 'The numbers', career: true, fn: vStats },
     ],
     bat: [
       { key: 'overview', name: 'Overview', title: 'Savant snapshot', pitches: true, fn: vOverview },
@@ -893,6 +1056,7 @@ const SS = (() => {
       { key: 'launch', name: 'EV & launch', title: 'Exit velo & launch angle', pitches: true, fn: vLaunch, side: 1 },
       { key: 'flight', name: 'Flight paths', title: 'Every ball in the air', pitches: true, fn: vFlight, side: 1, spray: 1 },
       { key: 'swing', name: 'Bat tracking', title: 'Bat tracking', fn: vSwing },
+      { key: 'stats', name: 'Stats', title: 'The numbers', career: true, fn: vStats },
     ],
   };
   const viewOf = (role, key) => VIEWS[role].find(v => v.key === key) || VIEWS[role][0];
@@ -909,7 +1073,7 @@ const SS = (() => {
     const panel = $('.panel'), hd = $('.hd'), ln = $('.lines'), vt = $('.vt'), body = $('.body');
     let token = 0, bodyTok = 0, hdKey = '', lnKey = '', bodyKey = '';
 
-    function header(p, role, y) {
+    function half(p, role) {
       const t = team(p.teamId), was = p.fa ? team(p.fa.to || p.fa.from) : null;
       const pos = role === 'pit' ? (p.throws ? `${p.throws}HP` : 'P') : (p.pos || '');
       const kick = p.fa ? (p.fa.to ? `<span class="fa">SIGNED</span>${esc(team(p.fa.to)?.name || '')}` : `<span class="fa">FREE AGENT</span>${was ? 'LAST: ' + esc(was.name) : ''}`)
@@ -917,14 +1081,28 @@ const SS = (() => {
       const tc = (p.fa ? was : t)?.color || '#2a3b4c';
       const lg = p.fa ? (p.fa.to || p.fa.from) : p.teamId;
       const meta = [pos, p.age ? `AGE ${p.age}` : '', p.bats ? `B/T ${p.bats}/${p.throws}` : '', p.num ? `#${p.num}` : ''].filter(Boolean).join(' · ');
-      hd.style.setProperty('--tc', tc);
-      hd.innerHTML = `<div class="shot"><img src="${headshot(p.id)}" alt=""></div><div class="pid"><div class="kick">${kick}</div>` +
+      return `<div class="half" style="--tc:${tc}"><div class="shot"><img src="${headshot(p.id)}" alt=""></div><div class="pid"><div class="kick">${kick}</div>` +
         `<div class="nm${p.name.length > 19 ? ' long' : ''}">${esc(p.name)}</div><div class="meta">${esc(meta)}</div></div>` +
-        (lg ? `<img class="logo${p.fa && !p.fa.to ? ' was' : ''}" src="${logo(lg)}" alt="">` : '');
+        (lg ? `<img class="logo${p.fa && !p.fa.to ? ' was' : ''}" src="${logo(lg)}" alt="">` : '') + '</div>';
+    }
+    function header(p, role, p2, role2) {
+      hd.classList.toggle('duo', !!p2);
+      hd.innerHTML = half(p, role) + (p2 ? half(p2, role2) + '<div class="vs">VS</div>' : '');
       hd.classList.remove('in'); void hd.offsetWidth; hd.classList.add('in');
     }
+    // Stats can flip between season / career (/ every season) on a clock both screens share (S.rot.t0)
+    function statMode(S, view) {
+      const R = S.rot, o = S.opts || {};
+      if (view.key !== 'stats' || !R || !R.on) return { mode: STAT_MODES[o.stat] ? o.stat : 'season' };
+      const modes = R.years ? ['season', 'career', 'years'] : ['season', 'career'], ms = clamp(+R.secs || 12, 5, 60) * 1000;
+      const el_ = ((Date.now() - (R.t0 || 0)) % (ms * modes.length) + ms * modes.length) % (ms * modes.length);
+      const i = Math.floor(el_ / ms), at = el_ - i * ms;
+      return { mode: modes[i], rot: { ms, at, next: ms - at } };
+    }
+    let last = null, rotT = 0;
 
     async function render(S) {
+      last = S; clearTimeout(rotT);
       el.classList.toggle('off', !S.on);
       el.classList.toggle('clear', S.bg === 'clear');
       el.classList.toggle('nolines', S.lines === false);
@@ -936,34 +1114,62 @@ const SS = (() => {
         if (bodyKey !== 'none') { bodyKey = 'none'; body.innerHTML = empty('Pick a player'); }
         return;
       }
-      const p = await ensure(S.id);
+      const cmp = !!(S.compare && S.id2 && S.id2 !== S.id);
+      const [p, p2] = await Promise.all([ensure(S.id), cmp ? ensure(S.id2) : null]);
       if (my !== token || !p) return;
+      const two = !!(cmp && p2);
       const role = S.role || p.role, y = S.year || SEASON, view = viewOf(role, S.view), o = S.opts || {};
-      const hk = `${p.id}|${role}|${p.name}|${p.fa ? 1 : 0}`;
-      if (hk !== hdKey) { hdKey = hk; header(p, role, y); }
-      const lk = `${p.id}|${role}|${y}`;
+      const role2 = two ? (S.role2 || p2.role) : null, y2 = two ? (S.year2 || y) : null;
+      // the second player shows the same graphic if his role has it, his card if not
+      const view2 = two ? (VIEWS[role2].find(v => v.key === view.key) || viewOf(role2, 'card')) : null;
+      el.classList.toggle('duo', two);
+      const { mode, rot } = statMode(S, view);
+      if (rot) rotT = setTimeout(() => last && render(last), rot.next + 40);
+      const hk = `${p.id}|${role}|${p.name}|${p.fa ? 1 : 0}|${two ? `${p2.id}|${role2}|${p2.fa ? 1 : 0}` : ''}`;
+      if (hk !== hdKey) { hdKey = hk; header(p, role, two ? p2 : null, role2); }
+      const lk = two ? 'duo' : `${p.id}|${role}|${y}`;
       if (lk !== lnKey) {
         lnKey = lk; ln.innerHTML = '';
-        lines(p.id, role, y).then(L => { if (lnKey === lk) ln.innerHTML = linesHTML(L, role, y); });
+        if (!two) lines(p.id, role, y).then(L => { if (lnKey === lk) ln.innerHTML = linesHTML(L, role, y); });
       }
-      const extras = [view.side && sideText(role, o.side), view.loc && o.loc && o.loc !== 'all' && LOC_FILTER[o.loc]?.lab,
-        view.spray && o.spray && o.spray !== 'all' && SPRAY_FILTER[o.spray]?.lab, view.zm && ZONE_METRIC[o.zm || 'xwoba'].lab, view.sub].filter(Boolean);
-      vt.innerHTML = `<b>${esc(view.title)}</b><span>${extras.map(esc).join(' · ')}${extras.length ? ' · ' : ''}${y !== SEASON ? `<i>${y} SEASON</i>` : y} · BASEBALL SAVANT</span>`;
-      const bk = JSON.stringify([p.id, role, y, view.key, view.side ? o.side : 0, view.loc ? o.loc : 0, view.spray ? o.spray : 0, view.zm ? o.zm : 0, sf, S.lines !== false]);
+      const yrs = two && y2 !== y ? `${y} vs ${y2}` : String(y);
+      const extras = view.career ? [STAT_MODES[mode].toUpperCase(), rot ? 'AUTO' : ''].filter(Boolean)
+        : [view.side && sideText(role, o.side), view.loc && o.loc && o.loc !== 'all' && LOC_FILTER[o.loc]?.lab,
+          view.spray && o.spray && o.spray !== 'all' && SPRAY_FILTER[o.spray]?.lab, view.zm && ZONE_METRIC[o.zm || 'xwoba'].lab, view.sub].filter(Boolean);
+      const src = view.career ? 'MLB STATS' : 'BASEBALL SAVANT';
+      const yTag = view.career && mode !== 'season' ? '' : (y !== SEASON ? `<i>${yrs} SEASON</i>` : yrs) + ' · ';
+      vt.innerHTML = `<b>${esc(two && !view.career && (view.key === 'card' || view.key === 'overview') && role === role2 ? 'Head to head' : view.title)}</b>` +
+        `<span>${extras.map(esc).join(' · ')}${extras.length ? ' · ' : ''}${yTag}${src}</span>`;
+      const bk = JSON.stringify([p.id, role, y, view.key, mode, view.side ? o.side : 0, view.loc ? o.loc : 0, view.spray ? o.spray : 0, view.zm ? o.zm : 0, sf, S.lines !== false,
+        two ? [p2.id, role2, y2] : 0]);
       // the same state can land three times (relay socket, poll, BroadcastChannel); only a change of body redraws
       if (bk === bodyKey) return;
       bodyKey = bk;
       const mb = ++bodyTok;
-      const slow = setTimeout(() => { if (mb === bodyTok) body.innerHTML = `<div class="loading"><i></i>${view.pitches ? 'PULLING EVERY PITCH FROM STATCAST' : 'LOADING SAVANT'}</div>`; }, 120);
-      let L = null, P = null, err = null;
+      const needP = v => v.pitches && !(two && (v.key === 'overview' || v.key === 'card') && role === role2);
+      const slow = setTimeout(() => { if (mb === bodyTok) body.innerHTML = `<div class="loading"><i></i>${view.career ? 'LOADING STATS' : needP(view) ? 'PULLING EVERY PITCH FROM STATCAST' : 'LOADING SAVANT'}</div>`; }, 120);
+      let L = null, P = null, CD = null, L2 = null, P2 = null, CD2 = null, err = null;
       try {
-        [L, P] = await Promise.all([league(y), view.pitches ? pitches(p.id, role, y) : null]);
+        [L, P, CD, L2, P2, CD2] = await Promise.all([
+          view.career ? null : league(y), !view.career && needP(view) ? pitches(p.id, role, y) : null, view.career ? careerData(p.id, role) : null,
+          two && !view2.career ? league(y2) : null, two && !view2.career && needP(view2) ? pitches(p2.id, role2, y2) : null, two && view2.career ? careerData(p2.id, role2) : null,
+        ]);
       } catch (e) { err = e; }
       clearTimeout(slow);
       if (mb !== bodyTok) return;
-      if (err || !L) { body.innerHTML = empty('Savant didn’t answer', 'Pick the view again to retry.'); bodyKey = ''; return; }
-      const c = { p, role, y, L, me: leagueRec(L, role, p.id), P, o, W: body.clientWidth, H: body.clientHeight };
-      body.innerHTML = `<div class="vw in">${view.fn(c)}</div>`;
+      if (err || (!view.career && !L)) { body.innerHTML = empty(view.career ? 'Stats didn’t load' : 'Savant didn’t answer', 'Pick the view again to retry.'); bodyKey = ''; return; }
+      const W = body.clientWidth, H = body.clientHeight;
+      const c = { p, role, y, L, me: leagueRec(L, role, p.id), P, CD, o, mode, rot, W, H };
+      let html;
+      if (!two) html = view.fn(c);
+      else {
+        const c2 = { p: p2, role: role2, y: y2, L: L2, me: leagueRec(L2, role2, p2.id), P: P2, CD: CD2, o, mode, rot, W, H };
+        if (view.career && role === role2 && mode !== 'years') html = vTape(c, c2, mode) + rotBar(c);
+        else if (view.career) html = halves(Object.assign({}, c, { rot: null }), Object.assign({}, c2, { rot: null }), x => mode === 'years' ? yearTable(x, x.CD, YEAR_KEYS_NARROW[x.role]) : vStats(x), x => mode === 'years' ? yearTable(x, x.CD, YEAR_KEYS_NARROW[x.role]) : vStats(x)) + rotBar(c);
+        else if ((view.key === 'card' || view.key === 'overview') && role === role2) html = vH2H(c, c2);
+        else html = halves(c, c2, view.key === 'overview' ? vCard : view.fn, view2.key === 'overview' ? vCard : view2.fn);
+      }
+      body.innerHTML = `<div class="vw in">${html}</div>`;
     }
     return { el, render };
   }

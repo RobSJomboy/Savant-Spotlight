@@ -73,7 +73,13 @@
   .who .n { font: 700 24px/1 var(--head); text-transform: uppercase; }
   .who .m { font: 500 15px var(--cond); color: var(--dim); margin-top: 3px; }
   .help { font: 500 14px var(--cond); color: var(--dim); }
-  .opt[hidden] { display: none !important; }
+  .opt[hidden], .cmp[hidden] { display: none !important; }
+  .cmp { display: inline-flex; gap: 4px; }
+  .cmp button { max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
+  .cmp button.act { background: var(--gold); color: var(--ink); }
+  .row.sel2 { border-left-color: #2f8fd8; background: rgba(47,143,216,.14); }
+  .row .slot { font: 700 12px var(--head); padding: 1px 5px; margin-left: 6px; background: var(--gold); color: var(--ink); }
+  .row.sel2 .slot { background: #2f8fd8; color: #fff; }
   #loading { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(11,31,54,.85); font: 700 28px var(--head); color: var(--gold); z-index: 50; text-transform: uppercase; }
 </style>
 </head>
@@ -106,6 +112,8 @@
       <div class="bar">
         <div class="who" id="who"><span class="help">Pick a player from the list.</span></div>
         <span class="grow"></span>
+        <label><input type="checkbox" id="compare"> Compare</label>
+        <span class="cmp" id="cmpBox"><button id="slotA"></button><button id="slotB"></button><button id="swap" title="Swap A and B">⇄</button></span>
         <label class="opt" id="roleWrap">Show as <select id="role"><option value="pit">Pitcher</option><option value="bat">Hitter</option></select></label>
         <label>Season <select id="year"></select></label>
       </div>
@@ -119,13 +127,16 @@
         <label class="opt" id="o-loc">Pitches <select id="loc"></select></label>
         <label class="opt" id="o-spray">Batted balls <select id="spray"></select></label>
         <label class="opt" id="o-zm">Zone stat <select id="zm"></select></label>
+        <label class="opt" id="o-stat">Show <select id="stat"><option value="season">Season</option><option value="career">Career</option><option value="years">Season by season</option></select></label>
+        <label class="opt" id="o-rot"><input type="checkbox" id="rot"> Auto-rotate season ↔ career every <select id="rotSecs"><option value="10">10</option><option value="12">12</option><option value="15">15</option></select> sec</label>
+        <label class="opt" id="o-roty"><input type="checkbox" id="rotYears"> include season by season</label>
         <span class="help" id="noOpts">No filters for this graphic.</span>
       </div>
       <div class="bar">
         <label><input type="checkbox" id="lines"> Stat lines (season + career)</label>
         <label>Background <select id="bg"><option value="paper">Paper</option><option value="clear">Transparent</option></select></label>
         <span class="grow"></span>
-        <span class="help">Keys: 1–7 pick a graphic · A on/off air · / search</span>
+        <span class="help">Keys: 1–8 pick a graphic · A on/off air · / search</span>
       </div>
       <div class="bar">
         <span class="k">safe area (stays clear of the host cams)</span>
@@ -151,11 +162,12 @@
 
   // ── state ──
   const DEF = { room: 'tb-savant-' + Math.random().toString(36).slice(2, 7), on: false, id: null, role: 'pit', view: 'overview', year: 'auto', yearUsed: SS.SEASON,
-    opts: { side: 'all', loc: 'all', spray: 'all', zm: 'xwoba' }, lines: true, bg: 'paper', safe: Object.assign({}, SS.SAFE_DEFAULT), guides: true,
+    opts: { side: 'all', loc: 'all', spray: 'all', zm: 'xwoba', stat: 'season' }, compare: false, id2: null, role2: 'pit', year2Used: SS.SEASON, slot: 'A',
+    rot: { on: false, secs: 12, years: false, t0: 0 }, lines: true, bg: 'paper', safe: Object.assign({}, SS.SAFE_DEFAULT), guides: true,
     pool: { scope: 'all', role: 'pit', team: '', sort: 'pt' } };
   let S;
   try { S = Object.assign({}, DEF, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { S = Object.assign({}, DEF); }
-  S.opts = Object.assign({}, DEF.opts, S.opts); S.pool = Object.assign({}, DEF.pool, S.pool); S.safe = Object.assign({}, DEF.safe, S.safe);
+  S.opts = Object.assign({}, DEF.opts, S.opts); S.rot = Object.assign({}, DEF.rot, S.rot); S.pool = Object.assign({}, DEF.pool, S.pool); S.safe = Object.assign({}, DEF.safe, S.safe);
   if (params.get('room')) S.room = params.get('room');
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(S)); } catch {} };
 
@@ -179,7 +191,8 @@
 
   const net = (t, c) => { $('net').textContent = t; $('net').className = 'status ' + c; };
   const send = SS.publisher(HUB, () => S.room, net);
-  const wire = () => ({ app: 'ss', seq: Date.now(), on: S.on, id: S.id, role: S.role, view: S.view, year: S.yearUsed, opts: S.opts, lines: S.lines, bg: S.bg, safe: S.safe });
+  const wire = () => ({ app: 'ss', seq: Date.now(), on: S.on, id: S.id, role: S.role, view: S.view, year: S.yearUsed, opts: S.opts, lines: S.lines, bg: S.bg, safe: S.safe,
+    compare: S.compare && !!S.id2, id2: S.id2, role2: S.role2, year2: S.year2Used, rot: S.rot });
   let pubT = 0;
   function commit() {
     save(); draw();
@@ -188,14 +201,16 @@
   }
 
   // ── season: "auto" uses this year unless he barely played, then last year ──
-  async function resolveYear() {
-    if (S.year !== 'auto') { S.yearUsed = +S.year; return; }
-    S.yearUsed = SS.SEASON;
-    if (!S.id) return;
+  async function yearFor(id, role) {
+    if (S.year !== 'auto') return +S.year;
+    if (!id) return SS.SEASON;
     const [now, prev] = await Promise.all([SS.league(SS.SEASON), SS.league(SS.SEASON - 1)].map(p => p.catch(() => null)));
-    const a = now ? SS.cardCount(now, S.role, S.id) : 0, b = prev ? SS.cardCount(prev, S.role, S.id) : 0;
-    const used = now?.[S.role][S.id]?.val, pt = S.role === 'pit' ? parseFloat(used?.p_formatted_ip || 0) : (used?.pa || 0);
-    if (a < 5 && b > a && pt < (S.role === 'pit' ? 25 : 100)) S.yearUsed = SS.SEASON - 1;
+    const a = now ? SS.cardCount(now, role, id) : 0, b = prev ? SS.cardCount(prev, role, id) : 0;
+    const used = now?.[role][id]?.val, pt = role === 'pit' ? parseFloat(used?.p_formatted_ip || 0) : (used?.pa || 0);
+    return a < 5 && b > a && pt < (role === 'pit' ? 25 : 100) ? SS.SEASON - 1 : SS.SEASON;
+  }
+  async function resolveYear() {
+    [S.yearUsed, S.year2Used] = await Promise.all([yearFor(S.id, S.role), yearFor(S.id2, S.role2)]);
   }
 
   // ── pool ──
@@ -216,8 +231,9 @@
     const t = SS.team(p.fa ? (p.fa.to || p.fa.from) : p.teamId);
     const where = p.fa ? `<span class="fa">${p.fa.to ? 'SIGNED ' + (SS.team(p.fa.to)?.abbr || '') : 'FA'}</span>${!p.fa.to && t ? ' · ex-' + t.abbr : ''}` : (t ? t.abbr : '—');
     const cc = L0 ? SS.cardCount(L0, roleFor(p), p.id) : 0;
-    return `<div class="row${p.id === S.id ? ' sel' : ''}" data-id="${p.id}"><div class="hs" style="--tc:${t?.color || '#2a3b4c'}"><img loading="lazy" src="${SS.headshot(p.id, 120)}" alt=""></div>` +
-      `<div><div class="n">${SS.esc(p.name)}</div><div class="m">${roleFor(p) === 'pit' ? (p.throws || '') + 'HP' : SS.esc(p.pos)} · ${where} · ${SS.esc(quick(p))}</div></div>` +
+    const slot = p.id === S.id ? 'A' : S.compare && p.id === S.id2 ? 'B' : '';
+    return `<div class="row${slot === 'A' ? ' sel' : slot === 'B' ? ' sel2' : ''}" data-id="${p.id}"><div class="hs" style="--tc:${t?.color || '#2a3b4c'}"><img loading="lazy" src="${SS.headshot(p.id, 120)}" alt=""></div>` +
+      `<div><div class="n">${SS.esc(p.name)}${S.compare && slot ? `<span class="slot">${slot}</span>` : ''}</div><div class="m">${roleFor(p) === 'pit' ? (p.throws || '') + 'HP' : SS.esc(p.pos)} · ${where} · ${SS.esc(quick(p))}</div></div>` +
       `<div class="cc"><b>${cc || '–'}</b>CARD</div></div>`;
   }
   let remote = [], remoteQ = '', rT = 0;
@@ -262,8 +278,14 @@
   async function pick(id) {
     const p = P(id) || await SS.ensure(id);
     if (!p) return;
-    S.id = id;
-    S.role = roleFor(p);
+    if (S.compare && S.slot === 'B' && S.id) {
+      if (id === S.id) return;
+      S.id2 = id; S.role2 = roleFor(p);
+    } else {
+      S.id = id; S.role = roleFor(p);
+      if (S.id2 === id) S.id2 = null;
+      if (S.compare && !S.id2) S.slot = 'B';
+    }
     if (!SS.VIEWS[S.role].some(v => v.key === S.view)) S.view = 'overview';
     await resolveYear();
     commit(); drawList();
@@ -278,13 +300,21 @@
     const p = S.id && P(S.id);
     $('who').innerHTML = p ? `<div><div class="n">${SS.esc(p.name)}</div><div class="m">${S.role === 'pit' ? 'Pitcher' : 'Hitter'} · showing ${S.yearUsed}${S.year === 'auto' && S.yearUsed !== SS.SEASON ? ' (auto: not enough ' + SS.SEASON + ' data)' : ''}</div></div>`
       : '<span class="help">Pick a player from the list.</span>';
+    const p2 = S.compare && S.id2 && P(S.id2);
+    $('cmpBox').hidden = !S.compare; $('compare').checked = S.compare;
+    $('slotA').textContent = 'A: ' + (p ? p.name : 'pick a player'); $('slotB').textContent = 'B: ' + (p2 ? p2.name : 'pick a player');
+    $('slotA').classList.toggle('act', S.slot !== 'B'); $('slotB').classList.toggle('act', S.slot === 'B');
+    if (p2) $('who').innerHTML += `<div class="m" style="margin-left:14px">vs <b style="color:var(--txt)">${SS.esc(p2.name)}</b> · ${S.year2Used}</div>`;
     $('roleWrap').hidden = !(p && p.two);
     $('role').value = S.role;
     const views = SS.VIEWS[S.role];
     $('views').innerHTML = views.map((v, i) => `<button data-v="${v.key}" class="${v.key === S.view ? 'act' : ''}"><small>${i + 1}</small>${v.name}</button>`).join('');
     const v = SS.viewOf(S.role, S.view);
     $('o-side').hidden = !v.side; $('o-loc').hidden = !v.loc; $('o-spray').hidden = !v.spray; $('o-zm').hidden = !v.zm;
-    $('noOpts').hidden = !!(v.side || v.loc || v.spray || v.zm);
+    $('o-stat').hidden = !v.career; $('o-rot').hidden = !v.career; $('o-roty').hidden = !(v.career && S.rot.on);
+    $('stat').value = S.opts.stat; $('stat').disabled = S.rot.on;
+    $('rot').checked = S.rot.on; $('rotSecs').value = String(S.rot.secs); $('rotYears').checked = S.rot.years;
+    $('noOpts').hidden = !!(v.side || v.loc || v.spray || v.zm || v.career);
     $('side').options[1].text = S.role === 'pit' ? 'Left-handed hitters' : 'Left-handed pitchers';
     $('side').options[2].text = S.role === 'pit' ? 'Right-handed hitters' : 'Right-handed pitchers';
     for (const k of ['side', 'loc', 'spray', 'zm']) $(k).value = S.opts[k];
@@ -294,7 +324,16 @@
     drawGuides();
     stage.render(Object.assign(wire(), { on: true }));
   }
-  $('views').onclick = e => { const b = e.target.closest('button'); if (!b) return; S.view = b.dataset.v; commit(); };
+  const setView = k => { if (k === 'stats' && S.view !== 'stats') S.rot.t0 = Date.now(); S.view = k; commit(); };
+  $('views').onclick = e => { const b = e.target.closest('button'); if (b) setView(b.dataset.v); };
+  $('stat').onchange = () => { S.opts.stat = $('stat').value; commit(); };
+  $('rot').onchange = () => { S.rot.on = $('rot').checked; S.rot.t0 = Date.now(); commit(); };
+  $('rotSecs').onchange = () => { S.rot.secs = +$('rotSecs').value; S.rot.t0 = Date.now(); commit(); };
+  $('rotYears').onchange = () => { S.rot.years = $('rotYears').checked; S.rot.t0 = Date.now(); commit(); };
+  $('compare').onchange = () => { S.compare = $('compare').checked; S.slot = S.compare && S.id && !S.id2 ? 'B' : 'A'; commit(); drawList(); };
+  $('slotA').onclick = () => { S.slot = 'A'; draw(); };
+  $('slotB').onclick = () => { S.slot = 'B'; draw(); };
+  $('swap').onclick = async () => { if (!S.id2) return; [S.id, S.id2, S.role, S.role2] = [S.id2, S.id, S.role2, S.role]; await resolveYear(); commit(); drawList(); };
   $('loc').innerHTML = Object.entries(SS.LOC_FILTER).map(([k, f]) => `<option value="${k}">${f.lab.toLowerCase()}</option>`).join('');
   $('spray').innerHTML = Object.entries(SS.SPRAY_FILTER).map(([k, f]) => `<option value="${k}">${f.lab.toLowerCase()}</option>`).join('');
   $('zm').innerHTML = Object.entries(SS.ZONE_METRIC).map(([k, f]) => `<option value="${k}">${f.lab}</option>`).join('');
@@ -314,7 +353,7 @@
     if (e.key === '/') { e.preventDefault(); $('q').focus(); return; }
     if (e.key === 'a' || e.key === 'A') { S.on = !S.on; commit(); return; }
     const n = +e.key, views = SS.VIEWS[S.role];
-    if (n >= 1 && n <= views.length) { S.view = views[n - 1].key; commit(); }
+    if (n >= 1 && n <= views.length) setView(views[n - 1].key);
   });
 
   $('room').value = S.room;

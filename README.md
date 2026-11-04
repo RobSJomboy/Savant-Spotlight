@@ -14,6 +14,16 @@ Baseball Savant graphics for any big leaguer, for Talkin' Baseball. A control pa
 **Hitters:** Overview (card + spray) · Percentile card · Spray chart · Hot zones (xwOBA / AVG /
 EV / whiff / swing %) · Exit velo × launch angle · Flight paths · Bat tracking
 
+**Both:** Stats — the season line, career totals, or season by season (gold = career best), from
+MLB StatsAPI. **Auto-rotate** flips season ↔ career (optionally season by season too) every 10, 12
+or 15 seconds, with a gold timer bar; the display keeps the clock, so it rotates even if the control
+page is closed.
+
+**Compare:** tick Compare, then the list fills slot A or B (⇄ swaps). Two headers with a VS badge;
+Percentiles/Overview become a mirrored head-to-head card, Stats becomes a tale of the tape (gold =
+better), and every other graphic runs side by side. A pitcher vs a hitter works too — each half shows
+what fits its player.
+
 Filters where they apply: opponent hand, pitch outcome (all / whiffs / strikeouts / hard-hit),
 batted-ball type (all / hits / XBH / HR), zone stat. Season picker back to 2015. **Auto** uses this
 season unless the player barely played, in which case it uses last season.
