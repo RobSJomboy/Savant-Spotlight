@@ -85,12 +85,20 @@
   .row.sel2 { border-left-color: #2f8fd8; background: rgba(47,143,216,.14); }
   .row .slot { font: 700 12px var(--head); padding: 1px 5px; margin-left: 6px; background: var(--gold); color: var(--ink); }
   .row.sel2 .slot { background: #2f8fd8; color: #fff; }
+  .modeSw { display: inline-flex; border: 2px solid var(--gold); border-radius: 3px; overflow: hidden; margin-right: 6px; }
+  .modeSw button { border-radius: 0; border-bottom: 0; padding: 8px 18px 7px; font-size: 18px; background: transparent; }
+  .modeSw button.act { background: var(--gold); color: var(--ink); }
+  body.teams .pOnly, body.teams #scope, body.teams #roleF, body.teams #pfilt { display: none !important; }
+  body:not(.teams) .tOnly { display: none !important; }
+  .row .hs.tl { background: #fff; display: grid; place-items: center; }
+  .row .hs.tl img { width: 78%; height: 78%; object-fit: contain; }
   #loading { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(11,31,54,.85); font: 700 28px var(--head); color: var(--gold); z-index: 50; text-transform: uppercase; }
 </style>
 </head>
 <body>
 <header>
   <h1><b>SAVANT</b> SPOTLIGHT</h1>
+  <div class="modeSw" id="modeSw"><button data-m="players">Players</button><button data-m="teams">Teams</button></div>
   <button id="airBtn" title="Fade the graphic in / out on the display (A)">OFF AIR</button>
   <span class="grow"></span>
   <span class="k">room</span><input type="text" id="room" style="width:150px">
@@ -104,7 +112,7 @@
       <input type="text" id="q" placeholder="Search any player (/)">
       <div class="filters" id="scope"></div>
       <div class="filters" id="roleF"></div>
-      <div class="filters">
+      <div class="filters" id="pfilt">
         <select id="teamF" style="flex:1"></select>
         <select id="sort"><option value="pt">Most playing time</option><option value="card">Fullest Savant card</option><option value="name">Name</option></select>
       </div>
@@ -119,8 +127,11 @@
         <span class="grow"></span>
         <label><input type="checkbox" id="compare"> Compare</label>
         <span class="cmp" id="cmpBox"><button id="slotA"></button><button id="slotB"></button><button id="swap" title="Swap A and B">⇄</button></span>
-        <label class="opt" id="roleWrap">Show as <select id="role"><option value="pit">Pitcher</option><option value="bat">Hitter</option></select></label>
-        <label>Season <select id="year"></select></label>
+        <label class="tOnly">Season <select id="tyear"></select></label>
+        <label class="tOnly" id="tyear2Wrap">B season <select id="tyear2"></select></label>
+        <label class="tOnly">Highlight past season <select id="tprev"></select></label>
+        <label class="opt pOnly" id="roleWrap">Show as <select id="role"><option value="pit">Pitcher</option><option value="bat">Hitter</option></select></label>
+        <label class="pOnly">Season <select id="year"></select></label>
       </div>
       <div class="bar">
         <span class="k">graphic</span>
@@ -131,7 +142,15 @@
         <span class="help" id="cycHelp">Steps through the graphics ticked below, then starts over.</span>
         <div id="cycList" class="cycList"></div>
       </div>
-      <div class="bar" id="optsBar">
+      <div class="bar tOnly">
+        <span class="k">options</span>
+        <label class="opt" id="t-luck">Side <select id="luck"><option value="off">Offense</option><option value="pit">Pitching</option></select></label>
+        <label class="opt" id="t-qm">Measure <select id="qm"></select></label>
+        <label class="opt" id="t-trail">Past-season arrows <select id="trail"><option value="sel">Picked teams</option><option value="all">All 30 teams</option><option value="none">None</option></select></label>
+        <label class="opt" id="t-rost">Show <select id="rost"><option value="both">Hitters + pitchers</option><option value="bat">Hitters</option><option value="pit">Pitchers</option></select></label>
+        <span class="help" id="tNoOpts">No options for this graphic.</span>
+      </div>
+      <div class="bar pOnly" id="optsBar">
         <span class="k">filters</span>
         <label class="opt" id="o-side">Opponent <select id="side"><option value="all">Everyone</option><option value="L">Lefties</option><option value="R">Righties</option></select></label>
         <label class="opt" id="o-loc">Pitches <select id="loc"></select></label>
@@ -143,7 +162,7 @@
         <span class="help" id="noOpts">No filters for this graphic.</span>
       </div>
       <div class="bar">
-        <label><input type="checkbox" id="lines"> Stat lines (season + career)</label>
+        <label class="pOnly"><input type="checkbox" id="lines"> Stat lines (season + career)</label>
         <label>Background <select id="bg"><option value="paper">Paper</option><option value="clear">Transparent</option></select></label>
         <span class="grow"></span>
         <span class="help">Keys: 1–8 pick a graphic · A on/off air · / search</span>
@@ -174,11 +193,16 @@
   const DEF = { room: 'tb-savant-' + Math.random().toString(36).slice(2, 7), on: false, id: null, role: 'pit', view: 'overview', year: 'auto', yearUsed: SS.SEASON,
     opts: { side: 'all', loc: 'all', spray: 'all', zm: 'xwoba', stat: 'season' }, compare: false, id2: null, role2: 'pit', year2Used: SS.SEASON, slot: 'A',
     rot: { on: false, secs: 12, years: false, t0: 0 }, cycle: { on: false, secs: 10, t0: 0, views: { pit: null, bat: null } }, lines: true, bg: 'paper', safe: Object.assign({}, SS.SAFE_DEFAULT), guides: true,
-    pool: { scope: 'all', role: 'pit', team: '', sort: 'pt' } };
+    pool: { scope: 'all', role: 'pit', team: '', sort: 'pt' },
+    mode: 'players', team: null, team2: null, tslot: 'A', tyear: SS.SEASON, tyear2: 0, tprev: 0, tview: 'tcard', topts: { luck: 'off', qm: 'xwoba', trail: 'sel', rost: 'both' } };
   let S;
   try { S = Object.assign({}, DEF, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { S = Object.assign({}, DEF); }
   S.opts = Object.assign({}, DEF.opts, S.opts); S.rot = Object.assign({}, DEF.rot, S.rot);
-  S.cycle = Object.assign({}, DEF.cycle, S.cycle); S.cycle.views = Object.assign({}, DEF.cycle.views, S.cycle.views); S.pool = Object.assign({}, DEF.pool, S.pool); S.safe = Object.assign({}, DEF.safe, S.safe);
+  S.cycle = Object.assign({}, DEF.cycle, S.cycle); S.cycle.views = Object.assign({}, DEF.cycle.views, S.cycle.views);
+  S.topts = Object.assign({}, DEF.topts, S.topts);
+  const TM = () => S.mode === 'teams';
+  const curRole = () => TM() ? 'team' : S.role;
+  const vkey = () => TM() ? S.tview : S.view; S.pool = Object.assign({}, DEF.pool, S.pool); S.safe = Object.assign({}, DEF.safe, S.safe);
   if (params.get('room')) S.room = params.get('room');
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(S)); } catch {} };
 
@@ -202,8 +226,9 @@
 
   const net = (t, c) => { $('net').textContent = t; $('net').className = 'status ' + c; };
   const send = SS.publisher(HUB, () => S.room, net);
-  const wire = () => ({ app: 'ss', seq: Date.now(), on: S.on, id: S.id, role: S.role, view: S.view, year: S.yearUsed, opts: S.opts, lines: S.lines, bg: S.bg, safe: S.safe,
-    compare: S.compare && !!S.id2, id2: S.id2, role2: S.role2, year2: S.year2Used, rot: S.rot, cycle: S.cycle });
+  const wire = () => ({ app: 'ss', seq: Date.now(), on: S.on, id: S.id, role: S.role, view: vkey(), year: S.yearUsed, opts: S.opts, lines: S.lines, bg: S.bg, safe: S.safe,
+    compare: S.compare && (TM() ? !!S.team2 : !!S.id2), id2: S.id2, role2: S.role2, year2: S.year2Used, rot: S.rot, cycle: S.cycle,
+    mode: S.mode, team: S.team, team2: S.team2, tyear: S.tyear, tyear2: S.tyear2 || S.tyear, tprev: S.tprev || 0, topts: S.topts });
   let pubT = 0;
   function commit() {
     save(); draw();
@@ -248,7 +273,33 @@
       `<div class="cc"><b>${cc || '–'}</b>CARD</div></div>`;
   }
   let remote = [], remoteQ = '', rT = 0;
+  // teams mode: the 30 clubs, ranked off Savant's team boards
+  let TL = null;
+  function teamRows() {
+    const q = norm($('q').value.trim());
+    const ids = Object.keys(SS.TEAMS).map(Number).filter(id => !q || norm(SS.teamName(id, S.tyear) + ' ' + SS.TEAMS[id][0]).includes(q));
+    const rk = (id, side, dir) => { const v = TL?.T[id]?.[side]?.xwoba; if (v == null) return null; return TL.ids.map(i => TL.T[i]?.[side]?.xwoba).filter(x => x != null).filter(x => dir > 0 ? x > v : x < v).length + 1; };
+    ids.sort((a, b) => SS.teamName(a, S.tyear).localeCompare(SS.teamName(b, S.tyear)));
+    $('list').innerHTML = ids.map(id => {
+      const slot = id === S.team ? 'A' : S.compare && id === S.team2 ? 'B' : '';
+      const o = rk(id, 'off', 1), p = rk(id, 'pit', -1);
+      return `<div class="row${slot === 'A' ? ' sel' : slot === 'B' ? ' sel2' : ''}" data-tid="${id}"><div class="hs tl"><img src="${SS.logoLight(id)}" alt=""></div>` +
+        `<div><div class="n">${SS.esc(SS.teamName(id, S.tyear))}${S.compare && slot ? `<span class="slot">${slot}</span>` : ''}</div><div class="m">${S.tyear} xwOBA rank · offense ${o ?? '–'} · pitching ${p ?? '–'}</div></div><div></div></div>`;
+    }).join('') || '<div class="more">No team by that name.</div>';
+  }
+  async function pickTeam(id) {
+    if (S.compare && S.tslot === 'B' && S.team) {
+      if (id === S.team && !(S.tyear2 && S.tyear2 !== S.tyear)) return;
+      S.team2 = id;
+    } else {
+      S.team = id;
+      if (S.team2 === id && !(S.tyear2 && S.tyear2 !== S.tyear)) S.team2 = null;
+      if (S.compare && !S.team2) S.tslot = 'B';
+    }
+    commit(); drawList();
+  }
   function drawList() {
+    if (TM()) return teamRows();
     const q = norm($('q').value.trim()), f = S.pool;
     let list = Object.values(SS.DB.players).filter(p => p.name);
     // a typed name searches everybody; the buttons only shape the browse list
@@ -268,12 +319,13 @@
     if (q && extra.length) h += `<div class="sect">MORE PLAYERS (ANY SEASON)</div>` + extra.map(rowHTML).join('');
     $('list').innerHTML = h;
   }
-  $('list').onclick = e => { const r = e.target.closest('.row'); if (r) pick(+r.dataset.id); };
+  $('list').onclick = e => { const r = e.target.closest('.row'); if (!r) return; if (r.dataset.tid) pickTeam(+r.dataset.tid); else pick(+r.dataset.id); };
   $('q').addEventListener('input', () => {
     drawList();
     const q = $('q').value.trim();
     clearTimeout(rT);
     if (q.length < 3) { remote = []; return; }
+    if (TM()) return;
     rT = setTimeout(async () => { remoteQ = q; const r = await SS.search(q); if (remoteQ === q) { remote = r; drawList(); } }, 350);
   });
   function filterButtons(host, items, key) {
@@ -308,6 +360,10 @@
     document.body.classList.toggle('noguides', !S.guides);
     $('airBtn').textContent = S.on ? 'ON AIR' : 'OFF AIR';
     $('airBtn').classList.toggle('live', S.on);
+    document.body.classList.toggle('teams', TM());
+    document.querySelectorAll('#modeSw button').forEach(b => b.classList.toggle('act', b.dataset.m === S.mode));
+    $('q').placeholder = TM() ? 'Search teams (/)' : 'Search any player (/)';
+    if (TM()) return drawTeams();
     const p = S.id && P(S.id);
     $('who').innerHTML = p ? `<div><div class="n">${SS.esc(p.name)}</div><div class="m">${S.role === 'pit' ? 'Pitcher' : 'Hitter'} · showing ${S.yearUsed}${S.year === 'auto' && S.yearUsed !== SS.SEASON ? ' (auto: not enough ' + SS.SEASON + ' data)' : ''}</div></div>`
       : '<span class="help">Pick a player from the list.</span>';
@@ -340,25 +396,53 @@
     drawGuides();
     stage.render(Object.assign(wire(), { on: true }));
   }
+  function drawTeams() {
+    const nm = id => id ? SS.teamName(id, S.tyear) : 'pick a team';
+    $('who').innerHTML = `<div><div class="n">${S.team ? SS.esc(nm(S.team)) : 'All 30 teams'}</div><div class="m">Teams · ${S.tyear} season${S.tprev ? ` · ghost = ${S.tprev}` : ''}` +
+      `${S.compare && S.team2 ? ` · vs ${SS.esc(SS.teamName(S.team2, S.tyear2 || S.tyear))} ${S.tyear2 || S.tyear}` : ''}</div></div>`;
+    $('cmpBox').hidden = !S.compare; $('compare').checked = S.compare;
+    $('slotA').textContent = 'A: ' + nm(S.team); $('slotB').textContent = 'B: ' + (S.team2 ? SS.teamName(S.team2, S.tyear2 || S.tyear) : 'pick a team');
+    $('slotA').classList.toggle('act', S.tslot !== 'B'); $('slotB').classList.toggle('act', S.tslot === 'B');
+    $('tyear2Wrap').hidden = !S.compare;
+    $('tyear').value = String(S.tyear); $('tyear2').value = String(S.tyear2 || 0); $('tprev').value = String(S.tprev || 0);
+    const views = SS.VIEWS.team, v = SS.viewOf('team', S.tview);
+    $('views').innerHTML = views.map((x, i) => `<button data-v="${x.key}" class="${x.key === S.tview ? 'act' : ''}"><small>${i + 1}</small>${x.name}</button>`).join('');
+    $('t-luck').hidden = !v.luck; $('t-qm').hidden = !v.qm; $('t-trail').hidden = !(v.trail && S.tprev); $('t-rost').hidden = !v.rost;
+    $('tNoOpts').hidden = !!(v.luck || v.qm || v.rost);
+    for (const k of ['luck', 'qm', 'trail', 'rost']) $(k).value = S.topts[k];
+    document.body.classList.toggle('cycling', S.cycle.on);
+    $('cyc').checked = S.cycle.on; $('cycSecs').value = S.cycle.secs;
+    const inLoop = S.cycle.views.team || views.map(x => x.key);
+    $('cycList').innerHTML = '<span class="k">in the loop</span>' + views.map(x => `<label><input type="checkbox" data-k="${x.key}"${inLoop.includes(x.key) ? ' checked' : ''}> ${x.name}</label>`).join('');
+    markLive();
+    $('bg').value = S.bg; $('guides').checked = S.guides;
+    for (const [k, id] of [['l', 'safeL'], ['r', 'safeR'], ['t', 'safeT'], ['b', 'safeB']]) $(id).value = S.safe[k];
+    drawGuides();
+    stage.render(Object.assign(wire(), { on: true }));
+  }
   // cycle clock: t0 is set so the loop is on graphic i right now
-  const cyc = () => SS.cycleInfo(S, S.role);
+  const cyc = () => SS.cycleInfo(S, curRole());
   const alignCycle = k => { const c = cyc(); if (!c) return; const i = c.keys.indexOf(k); S.cycle.t0 = Date.now() - Math.max(0, i) * c.ms; };
   function markLive() {
     const c = cyc();
     document.querySelectorAll('#views button').forEach(b => b.classList.toggle('live', !!c && b.dataset.v === c.key));
   }
   setInterval(markLive, 250);
-  const setView = k => { if (k === 'stats' && S.view !== 'stats') S.rot.t0 = Date.now(); S.view = k; alignCycle(k); commit(); };
-  $('cyc').onchange = () => { S.cycle.on = $('cyc').checked; alignCycle(S.view); commit(); };
+  const setView = k => {
+    if (TM()) S.tview = k;
+    else { if (k === 'stats' && S.view !== 'stats') S.rot.t0 = Date.now(); S.view = k; }
+    alignCycle(k); commit();
+  };
+  $('cyc').onchange = () => { S.cycle.on = $('cyc').checked; alignCycle(vkey()); commit(); };
   $('cycSecs').onchange = () => {
-    const live = cyc()?.key || S.view;
+    const live = cyc()?.key || vkey();
     S.cycle.secs = Math.max(3, Math.min(120, Math.round(+$('cycSecs').value) || 10));
     alignCycle(live); commit();
   };
   $('cycList').onchange = e => {
-    const live = cyc()?.key || S.view;
+    const live = cyc()?.key || vkey();
     const keys = [...$('cycList').querySelectorAll('input:checked')].map(i => i.dataset.k);
-    S.cycle.views[S.role] = keys.length === SS.VIEWS[S.role].length ? null : keys;
+    S.cycle.views[curRole()] = keys.length === SS.VIEWS[curRole()].length ? null : keys;
     alignCycle(keys.includes(live) ? live : keys[0]); commit();
   };
   $('views').onclick = e => { const b = e.target.closest('button'); if (b) setView(b.dataset.v); };
@@ -366,10 +450,16 @@
   $('rot').onchange = () => { S.rot.on = $('rot').checked; S.rot.t0 = Date.now(); commit(); };
   $('rotSecs').onchange = () => { S.rot.secs = +$('rotSecs').value; S.rot.t0 = Date.now(); commit(); };
   $('rotYears').onchange = () => { S.rot.years = $('rotYears').checked; S.rot.t0 = Date.now(); commit(); };
-  $('compare').onchange = () => { S.compare = $('compare').checked; S.slot = S.compare && S.id && !S.id2 ? 'B' : 'A'; commit(); drawList(); };
-  $('slotA').onclick = () => { S.slot = 'A'; draw(); };
-  $('slotB').onclick = () => { S.slot = 'B'; draw(); };
-  $('swap').onclick = async () => { if (!S.id2) return; [S.id, S.id2, S.role, S.role2] = [S.id2, S.id, S.role2, S.role]; await resolveYear(); commit(); drawList(); };
+  $('compare').onchange = () => {
+    S.compare = $('compare').checked;
+    if (TM()) S.tslot = S.compare && S.team && !S.team2 ? 'B' : 'A'; else S.slot = S.compare && S.id && !S.id2 ? 'B' : 'A';
+    commit(); drawList();
+  };
+  $('slotA').onclick = () => { if (TM()) S.tslot = 'A'; else S.slot = 'A'; draw(); };
+  $('slotB').onclick = () => { if (TM()) S.tslot = 'B'; else S.slot = 'B'; draw(); };
+  $('swap').onclick = async () => {
+    if (TM()) { if (!S.team2) return; [S.team, S.team2] = [S.team2, S.team]; if (S.tyear2) [S.tyear, S.tyear2] = [S.tyear2, S.tyear]; commit(); drawList(); return; }
+    if (!S.id2) return; [S.id, S.id2, S.role, S.role2] = [S.id2, S.id, S.role2, S.role]; await resolveYear(); commit(); drawList(); };
   $('loc').innerHTML = Object.entries(SS.LOC_FILTER).map(([k, f]) => `<option value="${k}">${f.lab.toLowerCase()}</option>`).join('');
   $('spray').innerHTML = Object.entries(SS.SPRAY_FILTER).map(([k, f]) => `<option value="${k}">${f.lab.toLowerCase()}</option>`).join('');
   $('zm').innerHTML = Object.entries(SS.ZONE_METRIC).map(([k, f]) => `<option value="${k}">${f.lab}</option>`).join('');
@@ -378,6 +468,19 @@
   $('year').onchange = async () => { S.year = $('year').value === 'auto' ? 'auto' : +$('year').value; await resolveYear(); commit(); };
   $('role').onchange = () => { S.role = $('role').value; if (!SS.VIEWS[S.role].some(v => v.key === S.view)) S.view = 'overview'; resolveYear().then(commit); };
   $('lines').onchange = () => { S.lines = $('lines').checked; commit(); };
+  // teams
+  document.getElementById('modeSw').onclick = e => { const b = e.target.closest('button'); if (!b || b.dataset.m === S.mode) return; S.mode = b.dataset.m; $('q').value = ''; commit(); drawList(); };
+  const tyears = Array.from({ length: SS.SEASON - SS.TEAM_FIRST + 1 }, (_, i) => SS.SEASON - i);
+  $('tyear').innerHTML = tyears.map(y => `<option value="${y}">${y}</option>`).join('');
+  $('tyear2').innerHTML = '<option value="0">Same as A</option>' + tyears.map(y => `<option value="${y}">${y}</option>`).join('');
+  const fillPrev = () => { $('tprev').innerHTML = '<option value="0">None</option>' + tyears.filter(y => y < S.tyear).map(y => `<option value="${y}">${y}</option>`).join(''); };
+  fillPrev();
+  const loadTL = async () => { TL = await SS.teamLeague(S.tyear).catch(() => null); if (TM()) drawList(); };
+  $('tyear').onchange = () => { S.tyear = +$('tyear').value; if (S.tprev >= S.tyear) S.tprev = S.tyear - 1 >= SS.TEAM_FIRST ? S.tyear - 1 : 0; fillPrev(); loadTL(); commit(); };
+  $('tyear2').onchange = () => { S.tyear2 = +$('tyear2').value; commit(); };
+  $('tprev').onchange = () => { S.tprev = +$('tprev').value; commit(); };
+  $('qm').innerHTML = Object.entries(SS.QM).map(([k, m]) => `<option value="${k}">${m[0]}</option>`).join('');
+  for (const k of ['luck', 'qm', 'trail', 'rost']) $(k).onchange = () => { S.topts[k] = $(k).value; commit(); };
   $('bg').onchange = () => { S.bg = $('bg').value; commit(); };
   $('airBtn').onclick = () => { S.on = !S.on; commit(); };
   for (const [k, id] of [['l', 'safeL'], ['r', 'safeR'], ['t', 'safeT'], ['b', 'safeB']]) $(id).onchange = () => { S.safe[k] = +$(id).value || SS.SAFE_DEFAULT[k]; commit(); };
@@ -388,7 +491,7 @@
     if (e.target.matches('input, select, textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
     if (e.key === '/') { e.preventDefault(); $('q').focus(); return; }
     if (e.key === 'a' || e.key === 'A') { S.on = !S.on; commit(); return; }
-    const n = +e.key, views = SS.VIEWS[S.role];
+    const n = +e.key, views = SS.VIEWS[curRole()];
     if (n >= 1 && n <= views.length) setView(views[n - 1].key);
   });
 
@@ -406,6 +509,7 @@
   draw();
   SS.load(msg => { $('loading').textContent = msg || 'LOADING…'; }).then(async () => {
     L0 = await lg().catch(() => null);
+    await loadTL();
     $('loading').style.display = 'none';
     drawList();
     commit();

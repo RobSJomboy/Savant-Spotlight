@@ -35,6 +35,33 @@ season unless the player barely played, in which case it uses last season.
 
 Every row in the header shows season and career stat lines from MLB StatsAPI.
 
+## Teams
+
+The **Players | Teams** switch at the top of the control page flips the whole app. Team graphics:
+
+- **Team card:** Savant-style bars ranked 1–30 on offense, pitching allowed and defense (Outs Above Average).
+  In compare, it becomes a mirrored head-to-head, including a team against itself in another season.
+- **Luck board:** all 30 teams, wOBA (what happened) against xwOBA (what the contact earned), for offense
+  or pitching. Ties share a rank.
+- **League map:** every logo placed by offense against pitching allowed, using xwOBA, barrel %,
+  hard-hit % or exit velo.
+- **Roster board:** the club's top hitters and pitchers by xwOBA, from Savant's player boards filtered to
+  that team. Each player's xwOBA is coloured by his percentile among MLB players with 150+ PA.
+- **Defense:** OAA in each direction (coming in, going back, toward either line), by position, and vs
+  righties and lefties.
+
+**Highlight past season** adds that year as a ghost:
+- a dashed ring on the card bars
+- the old number on the luck board
+- arrows from the old spot to the new one on the league map, for the picked teams or all 30
+- an old-xwOBA column on the roster
+- dashed ticks on defense
+
+Team data goes back to 2015, and OAA back to 2016. Every team number comes from Savant's team boards:
+`statcast?type=batter-team|pitcher-team`, `expected_statistics?type=batter-team|pitcher-team`, and
+`outs_above_average?type=Fielding_Team` (with `pos=3..9`). Savant has no team K% or whiff board, so
+those aren't shown.
+
 ## Data
 
 Nothing ships with the app. Both pages fetch live data:

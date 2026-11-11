@@ -41,7 +41,14 @@ const SS = (() => {
   async function csv(url, ms = 20000) {
     const r = await fetch(url, { signal: AbortSignal.timeout(ms) });
     if (!r.ok) throw new Error(r.status);
-    const text = (await r.text()).replace(/^﻿/, '');
+    let text = (await r.text()).replace(/^\uFEFF/, '');
+    // Savant's CDN sometimes holds an HTML error page for a CSV url (seen after a burst of requests);
+    // one retry past the cache gets the real file, and a page is never parsed as data
+    if (/^\s*</.test(text)) {
+      const r2 = await fetch(url + (url.includes('?') ? '&' : '?') + '_cb=' + Date.now(), { signal: AbortSignal.timeout(ms), cache: 'no-store' });
+      text = r2.ok ? (await r2.text()).replace(/^\uFEFF/, '') : '';
+      if (/^\s*</.test(text) || !text) throw new Error('Savant sent a page, not a CSV');
+    }
     // quoted fields can hold commas — Savant's first header is literally "last_name, first_name"
     const rows = []; let row = [], f = '', q = false;
     for (let i = 0; i < text.length; i++) {
@@ -1088,6 +1095,335 @@ const SS = (() => {
   };
   const viewOf = (role, key) => VIEWS[role].find(v => v.key === key) || VIEWS[role][0];
 
+  // ════════════════════════════════════════════════════════════════════
+  //  TEAMS — every number below comes off one of Savant's team boards:
+  //   /leaderboard/statcast?type=batter-team|pitcher-team      batted-ball quality
+  //   /leaderboard/expected_statistics?type=batter-team|...    wOBA vs xwOBA, xBA, xSLG
+  //   /leaderboard/outs_above_average?type=Fielding_Team       OAA (+ direction, + pos=3..9)
+  //   player boards with team=<id>                              roster boards
+  //  Savant has no team K% / whiff board, so those aren't shown rather than estimated.
+  // ════════════════════════════════════════════════════════════════════
+  const TEAM_FIRST = 2015, OAA_FIRST = 2016;
+  // Savant's team boards key teams by its own abbreviations
+  const SAV_ABBR = { AZ: 109, ARI: 109, ATH: 133, OAK: 133, CWS: 145, CHW: 145, WSH: 120, WAS: 120, KC: 118, KCR: 118, SD: 135, SDP: 135, SF: 137, SFG: 137, TB: 139, TBR: 139 };
+  const teamIdOf = ab => SAV_ABBR[ab] || +(Object.keys(TEAMS).find(id => TEAMS[id][0] === ab) || 0) || null;
+  const TEAM_FULL = { 108: 'Los Angeles Angels', 109: 'Arizona Diamondbacks', 110: 'Baltimore Orioles', 111: 'Boston Red Sox', 112: 'Chicago Cubs', 113: 'Cincinnati Reds',
+    114: 'Cleveland Guardians', 115: 'Colorado Rockies', 116: 'Detroit Tigers', 117: 'Houston Astros', 118: 'Kansas City Royals', 119: 'Los Angeles Dodgers', 120: 'Washington Nationals',
+    121: 'New York Mets', 133: 'Athletics', 134: 'Pittsburgh Pirates', 135: 'San Diego Padres', 136: 'Seattle Mariners', 137: 'San Francisco Giants', 138: 'St. Louis Cardinals',
+    139: 'Tampa Bay Rays', 140: 'Texas Rangers', 141: 'Toronto Blue Jays', 142: 'Minnesota Twins', 143: 'Philadelphia Phillies', 144: 'Atlanta Braves', 145: 'Chicago White Sox',
+    146: 'Miami Marlins', 147: 'New York Yankees', 158: 'Milwaukee Brewers' };
+  // the name the club had that season
+  const teamName = (id, y) => id === 114 && y < 2022 ? 'Cleveland Indians' : id === 133 && y < 2025 ? 'Oakland Athletics' : (TEAM_FULL[id] || TEAMS[id]?.[2] || '');
+  const DIVS = { 'AL East': [110, 111, 139, 141, 147], 'AL Central': [114, 116, 118, 142, 145], 'AL West': [108, 117, 133, 136, 140],
+    'NL East': [120, 121, 143, 144, 146], 'NL Central': [112, 113, 134, 138, 158], 'NL West': [109, 115, 119, 135, 137] };
+  const divOf = id => Object.keys(DIVS).find(d => DIVS[d].includes(+id)) || '';
+  const logoLight = id => `https://www.mlbstatic.com/team-logos/team-cap-on-light/${id}.svg`;
+  const ord = n => n == null ? '—' : n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
+
+  const TLG = {};
+  function teamLeague(y) {
+    if (TLG[y]) return TLG[y];
+    const job = (async () => {
+      const u = [
+        `/leaderboard/statcast?type=batter-team&year=${y}&position=&team=&min=0&csv=true`,
+        `/leaderboard/statcast?type=pitcher-team&year=${y}&position=&team=&min=0&csv=true`,
+        `/leaderboard/expected_statistics?type=batter-team&year=${y}&position=&team=&filterType=bip&min=0&csv=true`,
+        `/leaderboard/expected_statistics?type=pitcher-team&year=${y}&position=&team=&filterType=bip&min=0&csv=true`,
+        y >= OAA_FIRST ? `/leaderboard/outs_above_average?type=Fielding_Team&startYear=${y}&endYear=${y}&split=no&team=&range=year&min=1&pos=&roles=&viz=hide&csv=true` : null,
+      ];
+      const [sb, sp, xb, xp, oaa] = await Promise.all(u.map(x => x ? csv(SAV + x, 25000).catch(() => []) : []));
+      const T = {};
+      const seed = id => T[id] || (T[id] = { id, off: {}, pit: {}, def: null });
+      const sc = (rows, side) => rows.forEach(r => {
+        const id = teamIdOf(r.team_id); if (!id) return;
+        Object.assign(seed(id)[side], { ev: num(r.avg_hit_speed), maxev: num(r.max_hit_speed), brl: num(r.brl_percent), hh: num(r.ev95percent), ss: num(r.anglesweetspotpercent),
+          hrd: num(r.avg_hr_distance), la: num(r.avg_hit_angle), bbe: num(r.attempts), barrels: num(r.barrels) });
+      });
+      const xs = (rows, side) => rows.forEach(r => {
+        const id = teamIdOf(r.team_id); if (!id) return;
+        Object.assign(seed(id)[side], { xwoba: num(r.est_woba), woba: num(r.woba), xba: num(r.est_ba), ba: num(r.ba), xslg: num(r.est_slg), slg: num(r.slg), pa: num(r.pa) });
+      });
+      sc(sb, 'off'); sc(sp, 'pit'); xs(xb, 'off'); xs(xp, 'pit');
+      oaa.forEach(r => {
+        const id = +r.team_id; if (!TEAMS[id]) return;
+        seed(id).def = { oaa: num(r.outs_above_average), front: num(r.outs_above_average_infront), behind: num(r.outs_above_average_behind),
+          l3b: num(r.outs_above_average_lateral_toward3bline), l1b: num(r.outs_above_average_lateral_toward1bline),
+          rhh: num(r.outs_above_average_rhh), lhh: num(r.outs_above_average_lhh), sr: num(String(r.diff_success_rate_formatted || '').replace('%', '')) };
+      });
+      return { y, T, ids: Object.keys(T).map(Number) };
+    })();
+    TLG[y] = job;
+    job.then(L => { if (L.ids.length < 20) delete TLG[y]; }, () => delete TLG[y]);
+    return job;
+  }
+  // OAA by position: the same team board, once per position (1B … RF)
+  const POS = [[3, '1B'], [4, '2B'], [5, '3B'], [6, 'SS'], [7, 'LF'], [8, 'CF'], [9, 'RF']];
+  const TPOS = {};
+  function teamPosOAA(y) {
+    if (y < OAA_FIRST) return Promise.resolve(null);
+    if (TPOS[y]) return TPOS[y];
+    // one position at a time: fired together, Savant drops most of them
+    TPOS[y] = (async () => {
+      const by = {};
+      for (const [p, lab] of POS) {
+        const url = `${SAV}/leaderboard/outs_above_average?type=Fielding_Team&startYear=${y}&endYear=${y}&split=no&team=&range=year&min=1&pos=${p}&roles=&viz=hide&csv=true`;
+        let rows = await csv(url, 25000).catch(() => []);
+        if (!rows.length) rows = await csv(url, 25000).catch(() => []);
+        if (!rows.length) throw new Error('pos ' + p);
+        rows.forEach(r => { const id = +r.team_id; (by[id] = by[id] || {})[lab] = num(r.outs_above_average); });
+      }
+      return by;
+    })().catch(e => { delete TPOS[y]; throw e; });
+    return TPOS[y];
+  }
+  // a team's own players: Savant's player boards filtered to that club
+  const TROS = {};
+  function teamRoster(id, y) {
+    const k = id + '|' + y;
+    if (TROS[k]) return TROS[k];
+    const q = (path, type) => csv(`${SAV}${path}?type=${type}&year=${y}&position=&team=${id}&filterType=bip&min=1&csv=true`, 25000).catch(() => []);
+    TROS[k] = Promise.all([q('/leaderboard/expected_statistics', 'batter'), q('/leaderboard/statcast', 'batter'), q('/leaderboard/expected_statistics', 'pitcher'), q('/leaderboard/statcast', 'pitcher')])
+      .then(([xb, sb, xp, sp]) => {
+        const join = (xr, sr) => {
+          const s = {}; sr.forEach(r => s[+r.player_id] = r);
+          return xr.map(r => { const t = s[+r.player_id] || {};
+            return { id: +r.player_id, name: splitName(r['last_name, first_name'] || ''), pa: num(r.pa), xwoba: num(r.est_woba), woba: num(r.woba), xba: num(r.est_ba), xslg: num(r.est_slg),
+              era: num(r.era), xera: num(r.xera), brl: num(t.brl_percent), ev: num(t.avg_hit_speed), maxev: num(t.max_hit_speed), hh: num(t.ev95percent) }; });
+        };
+        return { bat: join(xb, sb), pit: join(xp, sp) };
+      }).catch(e => { delete TROS[k]; throw e; });
+    return TROS[k];
+  }
+  const splitName = s => { const i = s.indexOf(','); return i < 0 ? s.trim() : `${s.slice(i + 1).trim()} ${s.slice(0, i).trim()}`; };
+
+  // rank among the 30 clubs; dir 1 = higher is better, -1 = lower is better (anything a pitching staff allows)
+  function tRank(L, side, key, id, dir) {
+    if (!L) return null;
+    const v = L.T[id]?.[side]?.[key]; if (v == null) return null;
+    const vals = L.ids.map(i => L.T[i]?.[side]?.[key]).filter(x => x != null);
+    const better = vals.filter(x => dir > 0 ? x > v : x < v).length;
+    return { v, rank: better + 1, n: vals.length, pct: vals.length > 1 ? (vals.length - 1 - better) / (vals.length - 1) * 100 : 50 };
+  }
+  const sgn = (v, d = 0) => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(d);
+  const pc1 = v => v == null ? '—' : v.toFixed(1) + '%';
+  const T_ROWS = [
+    { sec: 'OFFENSE', side: 'off', rows: [['xwoba', 'xwOBA', f3, 1], ['woba', 'wOBA', f3, 1], ['xba', 'xBA', f3, 1], ['xslg', 'xSLG', f3, 1], ['ev', 'Avg Exit Velo', f1, 1],
+      ['brl', 'Barrel %', pc1, 1], ['hh', 'Hard-Hit %', pc1, 1], ['ss', 'Sweet-Spot %', pc1, 1]] },
+    { sec: 'PITCHING · ALLOWED', side: 'pit', rows: [['xwoba', 'xwOBA', f3, -1], ['woba', 'wOBA', f3, -1], ['xslg', 'xSLG', f3, -1], ['ev', 'Avg Exit Velo', f1, -1],
+      ['brl', 'Barrel %', pc1, -1], ['hh', 'Hard-Hit %', pc1, -1]] },
+    { sec: 'DEFENSE', side: 'def', rows: [['oaa', 'Outs Above Avg', v => sgn(v), 1], ['sr', 'Success Rate +/-', v => v == null ? '—' : sgn(v) + '%', 1]] },
+  ];
+
+  // ── team card: Savant-style bars, ranked 1–30, with last season as a ghost ──
+  function vTeamCard(c) {
+    const id = c.team, L = c.L, G = c.G;
+    if (!L.T[id]) return empty(`No ${c.y} Savant data for this team`);
+    const row = (r, side, i) => {
+      const [k, lab, fmt, dir] = r, x = tRank(L, side, k, id, dir);
+      if (!x) return `<div class="pr" style="--i:${i}"><div class="pl">${lab}</div><div class="pt"></div><div class="pv">—</div></div>`;
+      const w = clamp(x.pct, 2, 100), col = pctColor(x.pct), g = tRank(G, side, k, id, dir);
+      const ghost = g ? `<span class="gh" style="left:${clamp(g.pct, 2, 100)}%"></span>` : '';
+      return `<div class="pr" style="--i:${i}"><div class="pl">${lab}</div><div class="pt">${ghost}<i class="pf" style="width:${w}%;background:${col}"></i>` +
+        `<b class="pb" style="left:${w}%;background:${col}">${x.rank}</b></div><div class="pv">${fmt(x.v)}${g ? `<small>'${String(G.y).slice(2)} ${fmt(g.v)}</small>` : ''}</div></div>`;
+    };
+    const cols = [[T_ROWS[0]], [T_ROWS[1], ...(L.T[id].def ? [T_ROWS[2]] : [])]];
+    const lines = Math.max(...cols.map(cs => cs.reduce((n, s) => n + s.rows.length, 0)));
+    const heads = Math.max(...cols.map(cs => cs.length));
+    const rh = clamp((c.H - 40 - heads * 34) / lines, 30, 58), fs = clamp(rh * .44, 17, 24), bd = clamp(rh * .76, 28, 44);
+    let i = 0;
+    return `<div class="tcard" style="--fs:${fs.toFixed(1)}px;--bd:${bd.toFixed(0)}px;--rh:${rh.toFixed(1)}px">` + cols.map(cs => `<div class="tcol">` +
+      cs.map(s => `<div class="tsec">${s.sec}</div>` + s.rows.map(r => row(r, s.side, i++)).join('')).join('') + '</div>').join('') + '</div>' +
+      `<div class="estnote">Bubble = rank among 30 teams${G ? ` · hollow ring = ${G.y}` : ''} · Savant team leaderboards</div>`;
+  }
+  // ── two teams, mirrored ──
+  function vTeamH2H(a, b) {
+    const sections = T_ROWS.filter(s => s.side !== 'def' || (a.L.T[a.team]?.def && b.L.T[b.team]?.def));
+    const n = sections.reduce((t, s) => t + s.rows.length, 0);
+    const rh = clamp((a.H - 30 - sections.length * 30) / n, 24, 52), fs = clamp(rh * .5, 15, 23), bd = clamp(rh * .82, 24, 42);
+    const side = (x, s, win, G) => {
+      if (!x) return `<div class="ht ${s}"></div>`;
+      const w = clamp(x.pct, 2, 100), col = pctColor(x.pct);
+      const gh = G ? `<span class="gh" style="${s === 'l' ? 'right' : 'left'}:${clamp(G.pct, 2, 100)}%"></span>` : '';
+      return `<div class="ht ${s}${win ? ' win' : ''}">${gh}<i style="width:${w}%;background:${col}"></i><b style="${s === 'l' ? 'right' : 'left'}:${w}%;background:${col}">${x.rank}</b></div>`;
+    };
+    let h = `<div class="h2h tm" style="grid-template-rows:${sections.map(s => `30px repeat(${s.rows.length},${rh.toFixed(1)}px)`).join(' ')};--fs:${fs.toFixed(1)}px;--bd:${bd.toFixed(0)}px">`;
+    let i = 0;
+    for (const s of sections) {
+      h += `<div class="hsec">${s.sec}</div>`;
+      for (const [k, lab, fmt, dir] of s.rows) {
+        const A = tRank(a.L, s.side, k, a.team, dir), B = tRank(b.L, s.side, k, b.team, dir);
+        const win = A && B && A.v !== B.v ? ((A.v > B.v) === (dir > 0) ? 'a' : 'b') : '';
+        h += `<div class="hv" style="--i:${i}">${A ? fmt(A.v) : '—'}</div>${side(A, 'l', win === 'a', tRank(a.G, s.side, k, a.team, dir))}<div class="hl">${lab}</div>` +
+          `${side(B, 'r', win === 'b', tRank(b.G, s.side, k, b.team, dir))}<div class="hv r">${B ? fmt(B.v) : '—'}</div>`;
+        i++;
+      }
+    }
+    return h + '</div>';
+  }
+
+  // ── the luck board: what happened (wOBA) against what the contact earned (xwOBA) ──
+  function vLuck(c) {
+    const side = c.o.luck === 'pit' ? 'pit' : 'off', L = c.L, G = c.G;
+    // positive = results beat the contact: hitters wOBA above xwOBA, pitchers wOBA allowed below xwOBA allowed
+    const luck = (T, id) => { const t = T?.[id]?.[side]; return t && t.woba != null && t.xwoba != null ? (side === 'off' ? t.woba - t.xwoba : t.xwoba - t.woba) : null; };
+    // gaps are compared at Savant's own precision (3 places), and equal gaps share a rank
+    const rows = L.ids.map(id => ({ id, t: L.T[id][side], d: luck(L.T, id) })).filter(r => r.d != null).map(r => Object.assign(r, { d: Math.round(r.d * 1000) / 1000 }))
+      .sort((a, b) => b.d - a.d || TEAMS[a.id][0].localeCompare(TEAMS[b.id][0]));
+    rows.forEach(r => { r.rk = 1 + rows.filter(x => x.d > r.d).length; });
+    if (!rows.length) return empty(`No ${c.y} expected stats`);
+    const vals = rows.flatMap(r => [r.t.woba, r.t.xwoba]), lo = Math.min(...vals) - .004, hi = Math.max(...vals) + .004;
+    const half = Math.ceil(rows.length / 2), colW = (c.W - 60) / 2, rh = (c.H - 92) / half, sel = [c.team, c.team2].filter(Boolean);
+    const tx0 = 150, tx1 = colW - (G ? 176 : 110), X = v => tx0 + (v - lo) / (hi - lo) * (tx1 - tx0);
+    let s = svgOpen(c.W, c.H);
+    s += txt(24, 30, side === 'off' ? 'OFFENSE · wOBA VS xwOBA' : 'PITCHING · wOBA ALLOWED VS xwOBA ALLOWED', 't-head', 'start', 'style="font-size:22px"');
+    s += `<circle cx="${c.W - 456}" cy="23" r="8" fill="var(--ink)"/>` + txt(c.W - 442, 30, 'wOBA = WHAT HAPPENED', 't-axb', 'start') +
+      `<circle cx="${c.W - 232}" cy="23" r="8" fill="none" stroke="var(--ink)" stroke-width="3"/>` + txt(c.W - 24, 30, 'xwOBA = WHAT IT EARNED', 't-axb', 'end');
+    s += txt(24, 58, side === 'off' ? '↑ BEAT THEIR CONTACT (LUCKY)' : '↑ ALLOWED LESS THAN THE CONTACT EARNED (LUCKY)', 't-axb', 'start', 'style="fill:var(--green)"') +
+      txt(c.W - 24, 58, 'UNLUCKY ↓', 't-axb', 'end', 'style="fill:var(--red)"');
+    rows.forEach((r, i) => {
+      const col = i < half ? 0 : 1, j = i % half, x0 = 30 + col * (colW + 0), y = 74 + j * rh, cy = y + rh / 2, me = sel.includes(r.id);
+      const good = r.d >= 0, lc = good ? 'var(--green)' : 'var(--red)';
+      if (me) s += `<rect x="${x0 - 6}" y="${y + 1}" width="${colW - 4}" height="${rh - 2}" fill="rgba(233,185,73,.35)"/>`;
+      s += `<g class="fadein" ${delay(i, 30)}>` + txt(x0 + 22, cy + 7, r.rk, 't-num', 'end', 'style="font-size:19px;fill:var(--slate)"') +
+        `<image href="${logoLight(r.id)}" x="${x0 + 30}" y="${cy - rh * .4}" width="${rh * .8}" height="${rh * .8}"/>` +
+        txt(x0 + 34 + rh * .8, cy + 7, TEAMS[r.id][0], 't-head', 'start', 'style="font-size:20px"') +
+        `<line x1="${x0 + X(r.t.xwoba)}" y1="${cy}" x2="${x0 + X(r.t.woba)}" y2="${cy}" stroke="${lc}" stroke-width="6"/>` +
+        `<circle cx="${x0 + X(r.t.xwoba)}" cy="${cy}" r="7" fill="var(--card)" stroke="var(--ink)" stroke-width="3"/><circle cx="${x0 + X(r.t.woba)}" cy="${cy}" r="7" fill="var(--ink)"/>` +
+        txt(x0 + tx1 + 66, cy + 7, sgn(r.d * 1000, 0).replace(/(\d+)/, m => '.' + m.padStart(3, '0')), 't-num', 'end', `style="font-size:21px;fill:${lc}"`);
+      const g = luck(G?.T, r.id);
+      if (g != null) s += txt(x0 + tx1 + 150, cy + 6, `'${String(G.y).slice(2)} ${sgn(g * 1000, 0).replace(/(\d+)/, m => '.' + m.padStart(3, '0'))}`, 't-axb', 'end', 'style="font-size:14px"');
+      s += '</g>';
+    });
+    return s + '</svg>';
+  }
+
+  // ── league quadrant: offense on one axis, what the pitching allows on the other (up = better) ──
+  const QM = { xwoba: ['xwOBA', f3], brl: ['Barrel %', pc1], hh: ['Hard-Hit %', pc1], ev: ['Avg Exit Velo', f1] };
+  function vQuad(c) {
+    const m = QM[c.o.qm] ? c.o.qm : 'xwoba', L = c.L, G = c.G, sel = [c.team, c.team2].filter(Boolean), trail = c.o.trail || 'sel';
+    const pts = L.ids.map(id => ({ id, x: L.T[id].off[m], y: L.T[id].pit[m] })).filter(p => p.x != null && p.y != null);
+    if (!pts.length) return empty(`No ${c.y} team data`);
+    const gp = G ? pts.map(p => ({ id: p.id, x: G.T[p.id]?.off?.[m], y: G.T[p.id]?.pit?.[m] })).filter(p => p.x != null && p.y != null) : [];
+    const showG = gp.filter(p => trail === 'all' || (trail === 'sel' && sel.includes(p.id)));
+    const xs = pts.map(p => p.x).concat(showG.map(p => p.x)), ys = pts.map(p => p.y).concat(showG.map(p => p.y));
+    const pad = (a, b) => (b - a) * .08 || .01;
+    const x0v = Math.min(...xs) - pad(Math.min(...xs), Math.max(...xs)), x1v = Math.max(...xs) + pad(Math.min(...xs), Math.max(...xs));
+    const y0v = Math.min(...ys) - pad(Math.min(...ys), Math.max(...ys)), y1v = Math.max(...ys) + pad(Math.min(...ys), Math.max(...ys));
+    const l = 86, r = c.W - 26, t = 22, b = c.H - 60;
+    const X = v => l + (v - x0v) / (x1v - x0v) * (r - l), Y = v => t + (v - y0v) / (y1v - y0v) * (b - t);   // low allowed = top
+    const mx = mean(pts.map(p => p.x)), my = mean(pts.map(p => p.y));
+    let s = svgOpen(c.W, c.H) + `<defs><marker id="qa${++uid}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--slate)"/></marker></defs>`;
+    s += `<rect x="${X(mx)}" y="${t}" width="${r - X(mx)}" height="${Y(my) - t}" fill="rgba(29,127,69,.07)"/><rect x="${l}" y="${Y(my)}" width="${X(mx) - l}" height="${b - Y(my)}" fill="rgba(200,16,46,.06)"/>`;
+    s += `<line class="axis-l" x1="${X(mx)}" y1="${t}" x2="${X(mx)}" y2="${b}" stroke-dasharray="8 6"/><line class="axis-l" x1="${l}" y1="${Y(my)}" x2="${r}" y2="${Y(my)}" stroke-dasharray="8 6"/>`;
+    s += txt(r - 10, t + 24, 'GOOD BATS · GOOD ARMS', 't-axb', 'end', 'style="fill:var(--green)"') + txt(l + 10, t + 24, 'PITCHING CARRIES IT', 't-axb', 'start') +
+      txt(r - 10, b - 12, 'HITTING CARRIES IT', 't-axb', 'end') + txt(l + 10, b - 12, 'TROUBLE ON BOTH SIDES', 't-axb', 'start', 'style="fill:var(--red)"');
+    const fm = QM[m][1];
+    for (let k = 0; k <= 4; k++) { const vx = x0v + (x1v - x0v) * k / 4, vy = y0v + (y1v - y0v) * k / 4; s += txt(X(vx), b + 24, fm(vx), 't-ax') + txt(l - 10, Y(vy) + 6, fm(vy), 't-ax', 'end'); }
+    s += txt((l + r) / 2, c.H - 8, `OFFENSE ${QM[m][0].toUpperCase()} →`, 't-axb') + txt(20, (t + b) / 2, `PITCHING ${QM[m][0].toUpperCase()} ALLOWED (BETTER ↑)`, 't-axb', 'middle', `transform="rotate(-90 20 ${(t + b) / 2})"`);
+    const lg = 44, big = 74;
+    showG.forEach(g => {
+      const p = pts.find(q => q.id === g.id); if (!p) return;
+      s += `<line x1="${X(g.x)}" y1="${Y(g.y)}" x2="${X(p.x)}" y2="${Y(p.y)}" stroke="var(--slate)" stroke-width="2.5" stroke-dasharray="6 5" marker-end="url(#qa${uid})" class="fadein"/>` +
+        `<image href="${logoLight(g.id)}" x="${X(g.x) - 13}" y="${Y(g.y) - 13}" width="26" height="26" opacity=".45"/>`;
+    });
+    pts.slice().sort((a, b) => sel.includes(a.id) - sel.includes(b.id)).forEach((p, i) => {
+      const me = sel.includes(p.id), sz = me ? big : lg;
+      s += `<g class="pop" ${delay(i, 25)}>` + (me ? `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="${sz * .62}" fill="#fff" stroke="var(--gold)" stroke-width="6"/>` : '') +
+        `<image href="${logoLight(p.id)}" x="${X(p.x) - sz / 2}" y="${Y(p.y) - sz / 2}" width="${sz}" height="${sz}"${sel.length && !me ? ' opacity=".75"' : ''}/></g>`;
+    });
+    if (showG.length) s += txt(r - 10, b + 44, `DASHED ARROW = MOVE FROM ${G.y}`, 't-axb', 'end', 'style="font-size:13px"');
+    return s + '</svg>';
+  }
+
+  // ── roster: the club's own hitters / pitchers off Savant's player boards ──
+  function vRoster(c) {
+    const R = c.R; if (!R) return empty('Roster didn’t load');
+    const which = c.o.rost === 'pit' ? ['pit'] : c.o.rost === 'bat' ? ['bat'] : c.W < 800 ? ['bat'] : ['bat', 'pit'];
+    const PL = c.PL, GP = c.GPL;
+    const block = (kind, W, x0) => {
+      const list0 = R[kind].filter(p => p.xwoba != null);
+      let need = 150; while (need > 25 && list0.filter(p => (p.pa || 0) >= need).length < 8) need -= 25;
+      const list = list0.filter(p => (p.pa || 0) >= need).sort((a, b) => kind === 'bat' ? b.xwoba - a.xwoba : a.xwoba - b.xwoba).slice(0, 9);
+      if (!list.length) return `<div class="sub" style="left:${x0}px;width:${W}px">${empty('No players on Savant’s board')}</div>`;
+      const pool = PL ? Object.values(PL[kind]).map(o => o.val).filter(v => (v.pa || 0) >= 150 && typeof v.xwoba === 'number').map(v => v.xwoba) : [];
+      const rh = clamp((c.H - 96) / list.length, 40, 62);
+      const cols = kind === 'bat' ? [['PA', p => f0(p.pa)], ['wOBA', p => f3(p.woba)], ['BRL%', p => pc1(p.brl)], ['EV', p => f1(p.ev)]]
+        : [['BF', p => f0(p.pa)], ['wOBA', p => f3(p.woba)], ['xERA', p => p.xera == null ? '—' : p.xera.toFixed(2)], ['BRL%', p => pc1(p.brl)]];
+      const gcol = GP ? (p => { const g = GP[kind]?.[p.id]?.val?.xwoba; return typeof g === 'number' ? f3(g) : '—'; }) : null;
+      const head = ['', kind === 'bat' ? `TOP HITTERS · ${need}+ PA` : `TOP PITCHERS · ${need}+ BF`, 'xwOBA', ...cols.map(x => x[0]), ...(gcol ? [`'${String(c.G?.y || c.y - 1).slice(2)} xwOBA`] : [])];
+      const tmpl = `44px minmax(120px, 1fr) 84px ${cols.map(() => '58px').join(' ')}${gcol ? ' 66px' : ''}`;
+      let h = `<div class="sub" style="left:${x0}px;width:${W}px"><div class="rost" style="grid-template-columns:${tmpl};grid-auto-rows:${rh.toFixed(1)}px">` +
+        head.map((t, i) => `<div class="h${i === 1 ? ' l' : ''}">${t}</div>`).join('');
+      list.forEach((p, i) => {
+        const pct = rankPct(pool, p.xwoba, kind === 'pit');
+        h += `<div class="ph" style="--i:${i}"><img src="${headshot(p.id, 90)}" alt=""></div><div class="pn2">${esc(W < 760 ? p.name.replace(/^(\S)\S*\s+/, '$1. ') : p.name)}</div>` +
+          `<div><span class="pill" style="background:${pct == null ? '#8996a3' : pctColor(pct)}">${f3(p.xwoba)}</span></div>` + cols.map(x => `<div>${x[1](p)}</div>`).join('') + (gcol ? `<div class="dim">${gcol(p)}</div>` : '');
+      });
+      return h + '</div></div>';
+    };
+    const w = Math.floor(c.W / which.length);
+    return which.map((k, i) => block(k, i ? c.W - w : w, i * w)).join('') +
+      `<div class="estnote">${c.W < 800 ? `xwOBA colour = ${c.y} MLB percentile (150+ PA)` : `xwOBA colour = percentile among ${c.y} MLB players with 150+ PA · Savant player boards, team filter`}</div>`;
+  }
+
+  // ── defense: where the club gains and loses outs ──
+  function vDefense(c) {
+    const d = c.L.T[c.team]?.def;
+    if (c.y < OAA_FIRST) return empty('Outs Above Average starts in 2016');
+    if (!d) return empty(`No ${c.y} OAA for this team`);
+    const P = c.POS?.[c.team] || {}, GP = c.GPOS?.[c.team] || null, gd = c.G?.T?.[c.team]?.def;
+    const narrow = c.W < 800, fw = narrow ? c.W : Math.round(c.W * .46);
+    const rk = (k, side = 'def') => tRank(c.L, side, k, c.team, 1);
+    const colr = v => v == null ? '#a3acb6' : v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--slate)';
+    let s = svgOpen(c.W, c.H);
+    // total
+    const tot = rk('oaa');
+    s += txt(26, 52, sgn(d.oaa), 't-big', 'start', `style="font-size:58px;fill:${colr(d.oaa)}"`) + txt(26, 82, `OUTS ABOVE AVERAGE · ${ord(tot?.rank)} OF ${tot?.n || 30}`, 't-axb', 'start');
+    if (gd) s += txt(26, 104, `${c.G.y}: ${sgn(gd.oaa)} (${ord(tRank(c.G, 'def', 'oaa', c.team, 1)?.rank)})`, 't-axb', 'start', 'style="font-size:14px"');
+    // direction diagram: a fielder in the middle, outs gained/lost going in, back, and to either side
+    const cx = fw / 2, cy = narrow ? 130 + (c.H - 130) / 2 : (c.H + 70) / 2, R = narrow ? Math.min(fw * .28, (c.H - 130) / 2 - 80) : Math.min(fw * .3, c.H * .27);
+    const dir = [['behind', 'GOING BACK', 0, -1], ['front', 'COMING IN', 0, 1], ['l3b', 'TOWARD 3B LINE', -1, 0], ['l1b', 'TOWARD 1B LINE', 1, 0]];
+    s += `<circle cx="${cx}" cy="${cy}" r="${R * .32}" fill="#fff" stroke="var(--ink)" stroke-width="3"/>` + txt(cx, cy + 8, 'GLOVE', 't-axb');
+    dir.forEach(([k, lab, dx, dy], i) => {
+      const v = d[k], x2 = cx + dx * R, y2 = cy + dy * R, r2 = rk(k);
+      s += `<g class="fadein" ${delay(i, 90)}><line x1="${cx + dx * R * .36}" y1="${cy + dy * R * .36}" x2="${x2}" y2="${y2}" stroke="${colr(v)}" stroke-width="${8 + Math.min(10, Math.abs(v || 0) * .8)}" stroke-linecap="round"/>` +
+        // number and label stack on the arrow's own axis, so neither runs off the panel
+        txt(x2, dy < 0 ? y2 - 16 : dy > 0 ? y2 + 44 : y2 - 18, sgn(v), 't-big', 'middle', `style="font-size:36px;fill:${colr(v)}"`) +
+        txt(x2, dy < 0 ? y2 - 58 : dy > 0 ? y2 + 68 : y2 + 34, `${lab} · ${ord(r2?.rank)}`, 't-axb', 'middle', 'style="font-size:13px"') + '</g>';
+    });
+    if (!narrow) {
+      // by position, diverging from zero
+      const x0 = fw + 40, x1 = c.W - 30, mid = (x0 + 70 + x1 - 70) / 2, rows = POS.map(p => p[1]), rh = (c.H - 170) / (rows.length + 2);
+      const all = Object.values(c.POS || {}).flatMap(o => Object.values(o)).filter(v => v != null), mxv = Math.max(8, ...all.map(Math.abs));
+      const sc = (x1 - x0 - 140) / 2 / mxv;
+      s += txt(x0, 52, 'BY POSITION', 't-head', 'start', 'style="font-size:22px"');
+      if (!c.POS) s += txt(x0, 90, 'Position split didn’t load — pick Defense again to retry', 't-axb', 'start');
+      s += `<line class="axis-l" x1="${mid}" y1="72" x2="${mid}" y2="${72 + rh * rows.length}"/>`;
+      rows.forEach((pos, i) => {
+        const v = P[pos], y = 72 + i * rh, cy2 = y + rh / 2, w = (v || 0) * sc;
+        const prk = v == null ? null : Object.values(c.POS).map(o => o[pos]).filter(x => x != null).filter(x => x > v).length + 1;
+        s += txt(x0, cy2 + 8, pos, 't-head', 'start', 'style="font-size:24px"');
+        s += `<rect class="growx" ${delay(i, 70)} x="${Math.min(mid, mid + w)}" y="${cy2 - rh * .32}" width="${Math.abs(w)}" height="${rh * .64}" fill="${colr(v)}"/>`;
+        const gv = GP?.[pos]; if (gv != null) s += `<line x1="${mid + gv * sc}" y1="${cy2 - rh * .42}" x2="${mid + gv * sc}" y2="${cy2 + rh * .42}" stroke="var(--ink)" stroke-width="3" stroke-dasharray="4 3"/>`;
+        s += txt(v >= 0 ? mid + w + 10 : mid + w - 10, cy2 + 8, `${sgn(v)}`, 't-num', v >= 0 ? 'start' : 'end', 'style="font-size:24px"') + txt(x1, cy2 + 7, ord(prk), 't-axb', 'end');
+      });
+      // vs hand
+      const yh = 72 + rows.length * rh + 26;
+      s += txt(x0, yh + 6, 'VS RIGHTIES', 't-axb', 'start') + txt(x0 + 150, yh + 8, sgn(d.rhh), 't-num', 'start', `style="font-size:26px;fill:${colr(d.rhh)}"`) +
+        txt(x0 + 260, yh + 6, 'VS LEFTIES', 't-axb', 'start') + txt(x0 + 400, yh + 8, sgn(d.lhh), 't-num', 'start', `style="font-size:26px;fill:${colr(d.lhh)}"`);
+      if (GP) s += txt(x1, yh + 40, `DASHED TICK = ${c.G.y}`, 't-axb', 'end', 'style="font-size:13px"');
+    }
+    return s + '</svg>';
+  }
+
+  VIEWS.team = [
+    { key: 'tcard', name: 'Team card', title: 'Team Savant card', fn: vTeamCard, needTeam: 1 },
+    { key: 'luck', name: 'Luck board', title: 'The luck board', fn: vLuck, luck: 1 },
+    { key: 'quad', name: 'League map', title: 'Where every team stands', fn: vQuad, qm: 1, trail: 1 },
+    { key: 'roster', name: 'Roster board', title: 'Roster board', fn: vRoster, needTeam: 1, rost: 1, roster: 1 },
+    { key: 'defense', name: 'Defense', title: 'Team defense', fn: vDefense, needTeam: 1, pos: 1 },
+  ];
+
   // auto-cycle: which graphic is up right now, from the shared clock
   function cycleInfo(S, role) {
     const C = S.cycle; if (!C || !C.on) return null;
@@ -1147,6 +1483,8 @@ const SS = (() => {
       const sf = Object.assign({}, SAFE_DEFAULT, S.safe || {});
       Object.assign(panel.style, { left: sf.l + 'px', top: sf.t + 'px', width: (sf.r - sf.l) + 'px', height: (sf.b - sf.t) + 'px' });
       const my = ++token;
+      el.classList.toggle('tm', S.mode === 'teams');
+      if (S.mode === 'teams') return renderTeams(S, my, sf);
       if (!S.id) {
         hd.innerHTML = ''; ln.innerHTML = ''; vt.innerHTML = ''; hdKey = lnKey = '';
         if (bodyKey !== 'none') { bodyKey = 'none'; body.innerHTML = empty('Pick a player'); }
@@ -1221,6 +1559,66 @@ const SS = (() => {
       }
       body.innerHTML = `<div class="vw in">${html}</div>`;
     }
+    // ── teams ──
+    function teamHalf(id, y, L, duo) {
+      const t = team(id), tt = L?.T?.[id], nm = teamName(id, y);
+      const meta = [divOf(id).toUpperCase(), tt?.off?.pa ? `${tt.off.pa.toLocaleString()} PA` : '', tt?.off?.bbe ? `${tt.off.bbe.toLocaleString()} BATTED BALLS` : ''].filter(Boolean).join(' · ');
+      const fs = duo ? Math.min(44, Math.floor(300 / (nm.length * .55))) : Math.min(66, Math.floor(820 / (nm.length * .55)));
+      return `<div class="half" style="--tc:${t?.color || '#2a3b4c'}"><div class="shot tlogo"><img src="${logo(id)}" alt=""></div><div class="pid"><div class="kick">${y} SEASON</div>` +
+        `<div class="nm" style="font-size:${fs}px">${esc(nm.toUpperCase())}</div><div class="meta">${esc(meta)}</div></div></div>`;
+    }
+    async function renderTeams(S, my, sf) {
+      const o = S.topts || {}, y = S.tyear || SEASON, two = !!(S.compare && S.team && S.team2 && (S.team2 !== S.team || (S.tyear2 && S.tyear2 !== y)));
+      const y2 = two ? (S.tyear2 || y) : null, gy = S.tprev && S.tprev < y ? S.tprev : null, gy2 = two && S.tprev && S.tprev < y2 ? S.tprev : null;
+      const cyc = cycleInfo(S, 'team'), view = viewOf('team', cyc ? cyc.key : S.view);
+      if (cyc) rotT = setTimeout(() => last && render(last), cyc.next + 40);
+      el.classList.toggle('duo', two);
+      ln.innerHTML = ''; lnKey = '';
+      const [L, L2] = await Promise.all([teamLeague(y).catch(() => null), two ? teamLeague(y2).catch(() => null) : null]);
+      if (my !== token) return;
+      const hk = `T|${S.team}|${y}|${two ? S.team2 + '|' + y2 : ''}|${L ? 1 : 0}`;
+      if (hk !== hdKey) {
+        hdKey = hk;
+        if (S.team) {
+          hd.classList.toggle('duo', two);
+          hd.innerHTML = teamHalf(S.team, y, L, two) + (two ? teamHalf(S.team2, y2, L2, true) + '<div class="vs">VS</div>' : '');
+        } else { hd.classList.remove('duo'); hd.innerHTML = `<div class="half"><div class="pid"><div class="kick">${y} SEASON</div><div class="nm">ALL 30 TEAMS</div><div class="meta">BASEBALL SAVANT TEAM LEADERBOARDS</div></div></div>`; }
+        hd.classList.remove('in'); void hd.offsetWidth; hd.classList.add('in');
+      }
+      const extras = [view.luck && (o.luck === 'pit' ? 'PITCHING' : 'OFFENSE'), view.qm && QM[o.qm || 'xwoba'][0].toUpperCase(), gy ? `GHOST = ${gy}` : ''].filter(Boolean);
+      vt.innerHTML = `<b>${esc(two && view.key === 'tcard' ? 'Head to head' : view.title)}</b><span>${extras.map(esc).join(' · ')}${extras.length ? ' · ' : ''}` +
+        `${y !== SEASON ? `<i>${two && y2 !== y ? `${y} vs ${y2}` : y} SEASON</i>` : two && y2 !== y ? `${y} vs ${y2}` : y} · BASEBALL SAVANT</span>`;
+      const bk = JSON.stringify(['T', S.team, y, view.key, gy, view.luck ? o.luck : 0, view.qm ? [o.qm, o.trail] : 0, view.rost ? o.rost : 0, sf, two ? [S.team2, y2] : 0, S.compare ? S.team2 : 0]);
+      if (bk === bodyKey) return;
+      bodyKey = bk;
+      const mb = ++bodyTok;
+      if (view.needTeam && !S.team) { body.innerHTML = empty('Pick a team', 'Or switch to the Luck board or League map — those show all 30.'); return; }
+      const slow = setTimeout(() => { if (mb === bodyTok) body.innerHTML = '<div class="loading"><i></i>LOADING SAVANT TEAM BOARDS</div>'; }, 120);
+      let G = null, G2 = null, R = null, R2 = null, PL = null, GPL = null, POSd = null, GPOS = null, err = null;
+      try {
+        [G, G2, R, R2, PL, GPL, POSd, GPOS] = await Promise.all([
+          gy ? teamLeague(gy) : null, gy2 ? teamLeague(gy2) : null,
+          view.roster && S.team ? teamRoster(S.team, y) : null, view.roster && two ? teamRoster(S.team2, y2) : null,
+          view.roster ? league(y) : null, view.roster && gy ? league(gy) : null,
+          view.pos ? teamPosOAA(y).catch(() => null) : null, view.pos && gy ? teamPosOAA(gy).catch(() => null) : null,
+        ]);
+      } catch (e) { err = e; }
+      clearTimeout(slow);
+      if (mb !== bodyTok) return;
+      if (err || !L) { body.innerHTML = empty('Savant didn’t answer', 'Pick the graphic again to retry.'); bodyKey = ''; return; }
+      const W = body.clientWidth, H = body.clientHeight;
+      const c = { team: S.team, team2: two ? S.team2 : null, y, L, G, R, PL, GPL, POS: POSd, GPOS, o, W, H };
+      let html;
+      if (!two || !view.needTeam) html = view.fn(c);
+      else {
+        const [P2, G2POS] = view.pos ? await Promise.all([teamPosOAA(y2), gy2 ? teamPosOAA(gy2) : null]) : [null, null];
+        const PL2 = view.roster ? await league(y2) : null, GPL2 = view.roster && gy2 ? await league(gy2) : null;
+        if (mb !== bodyTok) return;
+        const c2 = { team: S.team2, y: y2, L: L2, G: G2, R: R2, PL: PL2, GPL: GPL2, POS: P2, GPOS: G2POS, o, W, H };
+        html = view.key === 'tcard' ? vTeamH2H(c, c2) : halves(c, c2, view.fn, view.fn);
+      }
+      body.innerHTML = `<div class="vw in">${html}</div>`;
+    }
     return { el, render };
   }
 
@@ -1273,5 +1671,5 @@ const SS = (() => {
   }
 
   return { SEASON, FIRST_YEAR, SAFE_DEFAULT, CAMS, DB, TEAMS, team, headshot, logo, load, ensure, search, league, leagueRec, cardCount, lines, pitches,
-    VIEWS, viewOf, cycleInfo, LOC_FILTER, SPRAY_FILTER, ZONE_METRIC, createStage, pctColor, esc, hubOf, publisher, subscribe };
+    VIEWS, viewOf, cycleInfo, teamLeague, teamName, TEAM_FIRST, QM, logoLight, LOC_FILTER, SPRAY_FILTER, ZONE_METRIC, createStage, pctColor, esc, hubOf, publisher, subscribe };
 })();
