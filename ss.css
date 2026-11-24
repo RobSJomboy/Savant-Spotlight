@@ -239,3 +239,50 @@ table.yrs { position: absolute; left: 16px; right: 16px; top: 12px; border-colla
 .rost .dim { color: var(--slate); font-size: 18px; }
 
 html.no-anim *, html.no-anim *::before, html.no-anim *::after { animation: none !important; transition: none !important; }
+
+/* ── All-JM frame: the 528×1004 column pinned right at top 38 (same spot as All-JM Team / MLB Standings) ── */
+.stage.slim .panel { gap: 8px; }
+.stage.slim.off .panel { transform: translateX(560px); }
+.stage.slim .hd, .stage.slim .lines, .stage.slim .body { box-shadow: none; }
+.stage.slim .hd { flex-basis: 112px; border-bottom-width: 5px; }
+.stage.slim .hd .shot { flex-basis: 104px; border-right-width: 5px; }
+.stage.slim .hd .pid { padding: 13px 12px 0 14px; }
+.stage.slim .hd .kick { font-size: 14px; }
+.stage.slim .hd .nm { font-size: 42px; margin-top: 6px; }
+.stage.slim .hd .meta { font-size: 17px; margin-top: 7px; }
+.stage.slim .hd .logo { flex-basis: 62px; height: 62px; margin: 0 12px 0 0; }
+.stage.slim .hd.duo { flex-basis: 170px; flex-direction: column; }
+.stage.slim .hd.duo .half + .half { border-left: 0; border-top: 5px solid var(--gold); flex-direction: row; }
+.stage.slim .hd.duo .half + .half .shot { border-left: 0; border-right: 5px solid var(--gold); }
+.stage.slim .hd.duo .half + .half .pid { text-align: left; padding: 9px 12px 0 14px; }
+.stage.slim .hd.duo .shot { flex-basis: 84px; }
+.stage.slim .hd.duo .pid { padding: 9px 12px 0 14px; }
+.stage.slim .hd.duo .nm { margin-top: 4px; }
+.stage.slim .hd.duo .meta { font-size: 14px; margin-top: 4px; }
+.stage.slim .hd.duo .kick { font-size: 12px; }
+.stage.slim .hd.duo .logo, .stage.slim .hd.duo .half + .half .logo { flex-basis: 48px; height: 48px; margin: 0 14px 0 0; align-self: center; }
+.stage.slim .hd .vs { left: auto; right: 72px; width: 48px; height: 48px; margin: -24px 0 0 0; font-size: 24px; line-height: 48px; }
+.stage.slim .lines { flex-basis: 100px; }
+.stage.slim .lines th { font-size: 14px; }
+.stage.slim .lines td { font-size: 25px; padding: 6px 0 5px; }
+.stage.slim .lines .rl { width: 84px; padding-left: 10px; font-size: 16px; }
+.stage.slim .vt { flex-basis: 36px; }
+.stage.slim .vt b { font-size: 23px; line-height: 36px; padding: 0 12px; white-space: nowrap; }
+.stage.slim .vt span { font-size: 12px; letter-spacing: .08em; text-align: right; padding-left: 8px; }
+.ars.slim .pn { font-size: 21px; gap: 8px; }
+.ars.slim .pn i { width: 10px; flex-basis: 10px; }
+.ars.slim .pn small { font-size: 12px; }
+.ars.slim .use { gap: 6px; padding: 0 6px 0 0; }
+.ars.slim .use b { font-size: 21px; }
+.ars.slim > div { font-size: 23px; }
+.ars.slim > .h { font-size: 12px; letter-spacing: .06em; }
+.ars.slim .pill { min-width: 54px; font-size: 19px; padding: 5px 3px 4px; }
+.stage.slim .h2h { inset: 12px 10px; grid-template-columns: 62px 1fr 148px 1fr 62px; column-gap: 9px; }
+.stage.slim .h2h .hv { font-size: calc(var(--fs) * .82); }
+.stage.slim .h2h .hl { font-size: calc(var(--fs) * .86); }
+.stage.slim .h2h.tm { column-gap: 9px; }
+.tcard.one { grid-template-columns: 1fr; inset: 8px 14px 30px 10px; }
+.tcard.one .tcol .pr { grid-template-columns: 150px 1fr 74px; column-gap: 20px; }
+.tcard.one .tsec { margin-top: 2px; }
+.stage.slim .h2h { grid-template-columns: 58px 1fr 124px 1fr 58px; column-gap: 21px; }
+.stage.slim .h2h.tm { column-gap: 21px; }

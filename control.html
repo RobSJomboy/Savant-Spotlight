@@ -168,7 +168,8 @@
         <span class="help">Keys: 1–8 pick a graphic · A on/off air · / search</span>
       </div>
       <div class="bar">
-        <span class="k">safe area (stays clear of the host cams)</span>
+        <label>Frame <select id="frame"><option value="cams">Between the host cams</option><option value="alljm">All-JM column (528×1004, right)</option></select></label>
+        <span class="k" id="safeK">safe area (stays clear of the host cams)</span>
         <label>Left <input type="number" id="safeL" step="5"></label>
         <label>Right <input type="number" id="safeR" step="5"></label>
         <label>Top <input type="number" id="safeT" step="5"></label>
@@ -192,7 +193,7 @@
   // ── state ──
   const DEF = { room: 'tb-savant-' + Math.random().toString(36).slice(2, 7), on: false, id: null, role: 'pit', view: 'overview', year: 'auto', yearUsed: SS.SEASON,
     opts: { side: 'all', loc: 'all', spray: 'all', zm: 'xwoba', stat: 'season' }, compare: false, id2: null, role2: 'pit', year2Used: SS.SEASON, slot: 'A',
-    rot: { on: false, secs: 12, years: false, t0: 0 }, cycle: { on: false, secs: 10, t0: 0, views: { pit: null, bat: null } }, lines: true, bg: 'paper', safe: Object.assign({}, SS.SAFE_DEFAULT), guides: true,
+    rot: { on: false, secs: 12, years: false, t0: 0 }, cycle: { on: false, secs: 10, t0: 0, views: { pit: null, bat: null } }, lines: true, bg: 'paper', frame: 'cams', safe: Object.assign({}, SS.SAFE_DEFAULT), guides: true,
     pool: { scope: 'all', role: 'pit', team: '', sort: 'pt' },
     mode: 'players', team: null, team2: null, tslot: 'A', tyear: SS.SEASON, tyear2: 0, tprev: 0, tview: 'tcard', topts: { luck: 'off', qm: 'xwoba', trail: 'sel', rost: 'both' } };
   let S;
@@ -216,8 +217,10 @@
   guides.className = 'guides';
   stage.el.appendChild(guides);
   function drawGuides() {
-    const s = S.safe, C = SS.CAMS, v = C.video, h = C.bottom - C.top;
+    const s = S.frame === 'alljm' ? SS.ALLJM : S.safe, C = SS.CAMS, v = C.video, h = C.bottom - C.top;
     const box = (cls, x, y, w, hh, t = '') => `<div class="${cls}" style="left:${x}px;top:${y}px;width:${w}px;height:${hh}px">${t}</div>`;
+    // the All-JM column has its own spot on the frame; the host-cam boxes don't apply to it
+    if (S.frame === 'alljm') { guides.innerHTML = box('safe', s.l, s.t, s.r - s.l, s.b - s.t); return; }
     guides.innerHTML =
       box('mask', 0, 0, 1920, v.t) + box('mask', 0, v.b, 1920, 1080 - v.b) + box('mask', 0, v.t, v.l, v.b - v.t) + box('mask', v.r, v.t, 1920 - v.r, v.b - v.t) +
       box('cam', 10, C.top, Math.max(60, s.l - 18), h, 'Trev') + box('cam', s.r + 8, C.top, Math.max(60, 1910 - s.r - 8), h, 'Jake') +
@@ -226,7 +229,7 @@
 
   const net = (t, c) => { $('net').textContent = t; $('net').className = 'status ' + c; };
   const send = SS.publisher(HUB, () => S.room, net);
-  const wire = () => ({ app: 'ss', seq: Date.now(), on: S.on, id: S.id, role: S.role, view: vkey(), year: S.yearUsed, opts: S.opts, lines: S.lines, bg: S.bg, safe: S.safe,
+  const wire = () => ({ app: 'ss', seq: Date.now(), on: S.on, id: S.id, role: S.role, view: vkey(), year: S.yearUsed, opts: S.opts, lines: S.lines, bg: S.bg, frame: S.frame, safe: S.safe,
     compare: S.compare && (TM() ? !!S.team2 : !!S.id2), id2: S.id2, role2: S.role2, year2: S.year2Used, rot: S.rot, cycle: S.cycle,
     mode: S.mode, team: S.team, team2: S.team2, tyear: S.tyear, tyear2: S.tyear2 || S.tyear, tprev: S.tprev || 0, topts: S.topts });
   let pubT = 0;
@@ -392,9 +395,16 @@
     for (const k of ['side', 'loc', 'spray', 'zm']) $(k).value = S.opts[k];
     $('year').value = String(S.year);
     $('lines').checked = S.lines; $('bg').value = S.bg; $('guides').checked = S.guides;
-    for (const [k, id] of [['l', 'safeL'], ['r', 'safeR'], ['t', 'safeT'], ['b', 'safeB']]) $(id).value = S.safe[k];
+    syncFrame();
     drawGuides();
     stage.render(Object.assign(wire(), { on: true }));
+  }
+  function syncFrame() {
+    const aj = S.frame === 'alljm';
+    $('frame').value = aj ? 'alljm' : 'cams';
+    $('safeK').textContent = aj ? 'safe area (used by the between-cams frame)' : 'safe area (stays clear of the host cams)';
+    for (const [k, id] of [['l', 'safeL'], ['r', 'safeR'], ['t', 'safeT'], ['b', 'safeB']]) { $(id).value = S.safe[k]; $(id).disabled = aj; }
+    $('safeReset').disabled = aj;
   }
   function drawTeams() {
     const nm = id => id ? SS.teamName(id, S.tyear) : 'pick a team';
@@ -416,7 +426,7 @@
     $('cycList').innerHTML = '<span class="k">in the loop</span>' + views.map(x => `<label><input type="checkbox" data-k="${x.key}"${inLoop.includes(x.key) ? ' checked' : ''}> ${x.name}</label>`).join('');
     markLive();
     $('bg').value = S.bg; $('guides').checked = S.guides;
-    for (const [k, id] of [['l', 'safeL'], ['r', 'safeR'], ['t', 'safeT'], ['b', 'safeB']]) $(id).value = S.safe[k];
+    syncFrame();
     drawGuides();
     stage.render(Object.assign(wire(), { on: true }));
   }
@@ -484,6 +494,12 @@
   $('bg').onchange = () => { S.bg = $('bg').value; commit(); };
   $('airBtn').onclick = () => { S.on = !S.on; commit(); };
   for (const [k, id] of [['l', 'safeL'], ['r', 'safeR'], ['t', 'safeT'], ['b', 'safeB']]) $(id).onchange = () => { S.safe[k] = +$(id).value || SS.SAFE_DEFAULT[k]; commit(); };
+  $('frame').onchange = () => {
+    S.frame = $('frame').value;
+    // the All-JM column sits over the show, so a full-screen paper backdrop would cover it
+    if (S.frame === 'alljm') S.bg = 'clear';
+    commit();
+  };
   $('safeReset').onclick = () => { S.safe = Object.assign({}, SS.SAFE_DEFAULT); commit(); };
   $('guides').onchange = () => { S.guides = $('guides').checked; save(); draw(); };
 

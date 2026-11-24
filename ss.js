@@ -19,6 +19,9 @@ const SS = (() => {
 
   // same frame as 5-Tool: host cams cover the left/right of the video window
   const SAFE_DEFAULT = { l: 400, t: 48, r: 1520, b: 895 };
+  // "All-JM" frame: the same 528×1004 column, pinned right at top 38, as All-JM Team / MLB Standings,
+  // so Spotlight drops into that Browser Source spot without re-aligning anything
+  const ALLJM = { l: 1392, t: 38, r: 1920, b: 1042 };
   const CAMS = { top: 230, bottom: 805, video: { l: 165, t: 41, r: 1750, b: 901 } };
 
   // ── teams ──
@@ -305,8 +308,10 @@ const SS = (() => {
     bat: [['G', 'gamesPlayed'], ['PA', 'plateAppearances'], ['AVG', 'avg'], ['OBP', 'obp'], ['SLG', 'slg'], ['OPS', 'ops'], ['HR', 'homeRuns'], ['RBI', 'rbi'], ['SB', 'stolenBases'],
       ['wRC+', (s, x) => x?.wRcPlus != null ? Math.round(x.wRcPlus) : null, 1], ['WAR', (s, x) => x?.war != null ? x.war.toFixed(1) : null, 1]],
   };
-  function linesHTML(L, role, y) {
-    const cols = LINE_COLS[role];
+  // the 528px column can't carry eleven columns; keep the six that say the most
+  const LINE_SLIM = { pit: ['ERA', 'IP', 'SO', 'WHIP', 'FIP', 'WAR'], bat: ['AVG', 'OBP', 'SLG', 'HR', 'wRC+', 'WAR'] };
+  function linesHTML(L, role, y, slim) {
+    const cols = slim ? LINE_COLS[role].filter(c => LINE_SLIM[role].includes(c[0])) : LINE_COLS[role];
     const cell = (s, x, c, saberOnly) => {
       if (!s) return '<td class="dim">—</td>';
       if (saberOnly && !x) return '<td class="dim">—</td>';
@@ -480,7 +485,9 @@ const SS = (() => {
     // half width (compare) keeps the five columns that matter most
     const narrow = c.W < 800;
     const head = narrow ? ['PITCH', 'USAGE', 'MPH', 'WHIFF %', 'RV /100'] : ['PITCH', 'USAGE', 'MPH', 'SPIN', 'IVB', 'ARM-SIDE HB', 'WHIFF %', 'PUT AWAY %', 'xwOBA', 'RUN VALUE /100'];
-    let h = `<div class="ars" style="grid-auto-rows:${rh.toFixed(1)}px;grid-template-rows:38px${narrow ? ';grid-template-columns:200px 1fr repeat(3, 78px);inset:14px 12px;align-content:center' : ''}">` +
+    // All-JM column (~520px) squeezes the pitch name and stat columns once more
+    const cols = c.slim ? '150px 1fr repeat(3, 64px)' : '200px 1fr repeat(3, 78px)';
+    let h = `<div class="ars${c.slim ? ' slim' : ''}" style="grid-auto-rows:${rh.toFixed(1)}px;grid-template-rows:38px${narrow ? `;grid-template-columns:${cols};inset:14px 12px;align-content:center` : ''}">` +
       head.map((t, i) => `<div class="h${i < 2 ? ' l' : ''}">${t}</div>`).join('');
     const umax = Math.max(...M.map(m => m.share));
     M.forEach((m, i) => {
@@ -980,6 +987,15 @@ const SS = (() => {
 
   // ── overview: card on the left, the signature chart on the right ──
   function vOverview(c) {
+    // narrow column (All-JM frame): top of the card over the chart instead of beside it
+    if (c.W < 600) {
+      const th = Math.round(c.H * .47);
+      const card = vCard(Object.assign({}, c, { H: th, limit: 6 }));
+      const sub = Object.assign({}, c, { H: c.H - th });
+      const low = c.role === 'pit' ? vMovement(sub) : vSpray(sub);
+      return `<div class="sub" style="left:0;right:0;top:0;bottom:auto;height:${th}px">${card}</div>` +
+        `<div class="sub" style="left:0;right:0;top:${th}px;bottom:auto;height:${c.H - th}px;border-top:2px solid var(--rule)">${low}</div>`;
+    }
     const lw = Math.round(c.W * .47);
     const card = vCard(Object.assign({}, c, { W: lw, H: c.H, limit: 11 }));
     const right = c.role === 'pit' ? vMovement(Object.assign({}, c, { W: c.W - lw, H: c.H })) : vSpray(Object.assign({}, c, { W: c.W - lw, H: c.H }));
@@ -1066,6 +1082,12 @@ const SS = (() => {
     }).join('') + '</div>';
   }
   function halves(a, b, fa, fb) {
+    // the All-JM column is too narrow to split side by side, so compare stacks A over B
+    if (a.slim) {
+      const h = Math.floor(a.H / 2);
+      return `<div class="sub" style="left:0;right:0;top:0;bottom:auto;height:${h}px">${fa(Object.assign({}, a, { H: h }))}</div>` +
+        `<div class="sub" style="left:0;right:0;top:${h}px;bottom:auto;height:${a.H - h}px;border-top:3px solid var(--ink)">${fb(Object.assign({}, b, { H: a.H - h }))}</div>`;
+    }
     const w = Math.floor(a.W / 2);
     return `<div class="sub" style="left:0;width:${w}px">${fa(Object.assign({}, a, { W: w }))}</div>` +
       `<div class="sub" style="left:${w}px;width:${a.W - w}px;border-left:3px solid var(--ink)">${fb(Object.assign({}, b, { W: a.W - w }))}</div>`;
@@ -1226,12 +1248,13 @@ const SS = (() => {
       return `<div class="pr" style="--i:${i}"><div class="pl">${lab}</div><div class="pt">${ghost}<i class="pf" style="width:${w}%;background:${col}"></i>` +
         `<b class="pb" style="left:${w}%;background:${col}">${x.rank}</b></div><div class="pv">${fmt(x.v)}${g ? `<small>'${String(G.y).slice(2)} ${fmt(g.v)}</small>` : ''}</div></div>`;
     };
-    const cols = [[T_ROWS[0]], [T_ROWS[1], ...(L.T[id].def ? [T_ROWS[2]] : [])]];
+    const secs = [T_ROWS[0], T_ROWS[1], ...(L.T[id].def ? [T_ROWS[2]] : [])];
+    const cols = c.W < 600 ? [secs] : [[secs[0]], secs.slice(1)];
     const lines = Math.max(...cols.map(cs => cs.reduce((n, s) => n + s.rows.length, 0)));
     const heads = Math.max(...cols.map(cs => cs.length));
     const rh = clamp((c.H - 40 - heads * 34) / lines, 30, 58), fs = clamp(rh * .44, 17, 24), bd = clamp(rh * .76, 28, 44);
     let i = 0;
-    return `<div class="tcard" style="--fs:${fs.toFixed(1)}px;--bd:${bd.toFixed(0)}px;--rh:${rh.toFixed(1)}px">` + cols.map(cs => `<div class="tcol">` +
+    return `<div class="tcard${c.W < 600 ? ' one' : ''}" style="--fs:${fs.toFixed(1)}px;--bd:${bd.toFixed(0)}px;--rh:${rh.toFixed(1)}px">` + cols.map(cs => `<div class="tcol">` +
       cs.map(s => `<div class="tsec">${s.sec}</div>` + s.rows.map(r => row(r, s.side, i++)).join('')).join('') + '</div>').join('') + '</div>' +
       `<div class="estnote">Bubble = rank among 30 teams${G ? ` · hollow ring = ${G.y}` : ''} · Savant team leaderboards</div>`;
   }
@@ -1272,16 +1295,19 @@ const SS = (() => {
     rows.forEach(r => { r.rk = 1 + rows.filter(x => x.d > r.d).length; });
     if (!rows.length) return empty(`No ${c.y} expected stats`);
     const vals = rows.flatMap(r => [r.t.woba, r.t.xwoba]), lo = Math.min(...vals) - .004, hi = Math.max(...vals) + .004;
-    const half = Math.ceil(rows.length / 2), colW = (c.W - 60) / 2, rh = (c.H - 92) / half, sel = [c.team, c.team2].filter(Boolean);
-    const tx0 = 150, tx1 = colW - (G ? 176 : 110), X = v => tx0 + (v - lo) / (hi - lo) * (tx1 - tx0);
+    // narrow (All-JM column): legend drops to its own line, bars get the room the ghost-year text would take
+    const nw = c.W < 600, top = nw ? 100 : 74;
+    const half = Math.ceil(rows.length / 2), colW = (c.W - 60) / 2, rh = (c.H - top - 18) / half, sel = [c.team, c.team2].filter(Boolean);
+    const tx0 = nw ? 104 : 150, tx1 = colW - (nw ? 72 : G ? 176 : 110), X = v => tx0 + (v - lo) / (hi - lo) * (tx1 - tx0);
     let s = svgOpen(c.W, c.H);
-    s += txt(24, 30, side === 'off' ? 'OFFENSE · wOBA VS xwOBA' : 'PITCHING · wOBA ALLOWED VS xwOBA ALLOWED', 't-head', 'start', 'style="font-size:22px"');
-    s += `<circle cx="${c.W - 456}" cy="23" r="8" fill="var(--ink)"/>` + txt(c.W - 442, 30, 'wOBA = WHAT HAPPENED', 't-axb', 'start') +
-      `<circle cx="${c.W - 232}" cy="23" r="8" fill="none" stroke="var(--ink)" stroke-width="3"/>` + txt(c.W - 24, 30, 'xwOBA = WHAT IT EARNED', 't-axb', 'end');
-    s += txt(24, 58, side === 'off' ? '↑ BEAT THEIR CONTACT (LUCKY)' : '↑ ALLOWED LESS THAN THE CONTACT EARNED (LUCKY)', 't-axb', 'start', 'style="fill:var(--green)"') +
-      txt(c.W - 24, 58, 'UNLUCKY ↓', 't-axb', 'end', 'style="fill:var(--red)"');
+    s += txt(24, 30, side === 'off' ? 'OFFENSE · wOBA VS xwOBA' : nw ? 'PITCHING · wOBA VS xwOBA ALLOWED' : 'PITCHING · wOBA ALLOWED VS xwOBA ALLOWED', 't-head', 'start', 'style="font-size:22px"');
+    const ly = nw ? 58 : 23;
+    s += `<circle cx="${c.W - 456}" cy="${ly}" r="8" fill="var(--ink)"/>` + txt(c.W - 442, ly + 7, 'wOBA = WHAT HAPPENED', 't-axb', 'start') +
+      `<circle cx="${c.W - 232}" cy="${ly}" r="8" fill="none" stroke="var(--ink)" stroke-width="3"/>` + txt(c.W - 24, ly + 7, 'xwOBA = WHAT IT EARNED', 't-axb', 'end');
+    s += txt(24, top - 16, side === 'off' ? '↑ BEAT THEIR CONTACT (LUCKY)' : nw ? '↑ LUCKY' : '↑ ALLOWED LESS THAN THE CONTACT EARNED (LUCKY)', 't-axb', 'start', 'style="fill:var(--green)"') +
+      txt(c.W - 24, top - 16, 'UNLUCKY ↓', 't-axb', 'end', 'style="fill:var(--red)"');
     rows.forEach((r, i) => {
-      const col = i < half ? 0 : 1, j = i % half, x0 = 30 + col * (colW + 0), y = 74 + j * rh, cy = y + rh / 2, me = sel.includes(r.id);
+      const col = i < half ? 0 : 1, j = i % half, x0 = 30 + col * (colW + 0), y = top + j * rh, cy = y + rh / 2, me = sel.includes(r.id);
       const good = r.d >= 0, lc = good ? 'var(--green)' : 'var(--red)';
       if (me) s += `<rect x="${x0 - 6}" y="${y + 1}" width="${colW - 4}" height="${rh - 2}" fill="rgba(233,185,73,.35)"/>`;
       s += `<g class="fadein" ${delay(i, 30)}>` + txt(x0 + 22, cy + 7, r.rk, 't-num', 'end', 'style="font-size:19px;fill:var(--slate)"') +
@@ -1291,7 +1317,7 @@ const SS = (() => {
         `<circle cx="${x0 + X(r.t.xwoba)}" cy="${cy}" r="7" fill="var(--card)" stroke="var(--ink)" stroke-width="3"/><circle cx="${x0 + X(r.t.woba)}" cy="${cy}" r="7" fill="var(--ink)"/>` +
         txt(x0 + tx1 + 66, cy + 7, sgn(r.d * 1000, 0).replace(/(\d+)/, m => '.' + m.padStart(3, '0')), 't-num', 'end', `style="font-size:21px;fill:${lc}"`);
       const g = luck(G?.T, r.id);
-      if (g != null) s += txt(x0 + tx1 + 150, cy + 6, `'${String(G.y).slice(2)} ${sgn(g * 1000, 0).replace(/(\d+)/, m => '.' + m.padStart(3, '0'))}`, 't-axb', 'end', 'style="font-size:14px"');
+      if (g != null && !nw) s += txt(x0 + tx1 + 150, cy + 6, `'${String(G.y).slice(2)} ${sgn(g * 1000, 0).replace(/(\d+)/, m => '.' + m.padStart(3, '0'))}`, 't-axb', 'end', 'style="font-size:14px"');
       s += '</g>';
     });
     return s + '</svg>';
@@ -1455,7 +1481,7 @@ const SS = (() => {
       const lg = p.fa ? (p.fa.to || p.fa.from) : p.teamId;
       const meta = [pos, p.age ? `AGE ${p.age}` : '', p.bats ? `B/T ${p.bats}/${p.throws}` : '', p.num ? `#${p.num}` : ''].filter(Boolean).join(' · ');
       return `<div class="half" style="--tc:${tc}"><div class="shot"><img src="${headshot(p.id)}" alt=""></div><div class="pid"><div class="kick">${kick}</div>` +
-        `<div class="nm${!duo && p.name.length > 19 ? ' long' : ''}"${duo ? ` style="font-size:${Math.min(44, Math.floor(300 / (p.name.length * .55)))}px"` : ''}>${esc(p.name)}</div><div class="meta">${esc(meta)}</div></div>` +
+        `<div class="nm${!duo && p.name.length > 19 ? ' long' : ''}"${el.classList.contains('slim') ? ` style="font-size:${Math.min(duo ? 34 : 42, Math.floor((duo ? 330 : 300) / (p.name.length * .5)))}px"` : duo ? ` style="font-size:${Math.min(44, Math.floor(300 / (p.name.length * .55)))}px"` : ''}>${esc(p.name)}</div><div class="meta">${esc(meta)}</div></div>` +
         (lg ? `<img class="logo${p.fa && !p.fa.to ? ' was' : ''}" src="${logo(lg)}" alt="">` : '') + '</div>';
     }
     function header(p, role, p2, role2) {
@@ -1480,7 +1506,9 @@ const SS = (() => {
       el.classList.toggle('off', !S.on);
       el.classList.toggle('clear', S.bg === 'clear');
       el.classList.toggle('nolines', S.lines === false);
-      const sf = Object.assign({}, SAFE_DEFAULT, S.safe || {});
+      const slim = S.frame === 'alljm';
+      el.classList.toggle('slim', slim);
+      const sf = slim ? ALLJM : Object.assign({}, SAFE_DEFAULT, S.safe || {});
       Object.assign(panel.style, { left: sf.l + 'px', top: sf.t + 'px', width: (sf.r - sf.l) + 'px', height: (sf.b - sf.t) + 'px' });
       const my = ++token;
       el.classList.toggle('tm', S.mode === 'teams');
@@ -1513,12 +1541,12 @@ const SS = (() => {
         });
         warm(p.id, role, y); if (two) warm(p2.id, role2, y2);
       }
-      const hk = `${p.id}|${role}|${p.name}|${p.fa ? 1 : 0}|${two ? `${p2.id}|${role2}|${p2.fa ? 1 : 0}` : ''}`;
+      const hk = `${slim ? 'S' : ''}${p.id}|${role}|${p.name}|${p.fa ? 1 : 0}|${two ? `${p2.id}|${role2}|${p2.fa ? 1 : 0}` : ''}`;
       if (hk !== hdKey) { hdKey = hk; header(p, role, two ? p2 : null, role2); }
-      const lk = two ? 'duo' : `${p.id}|${role}|${y}`;
+      const lk = two ? 'duo' : `${p.id}|${role}|${y}|${slim ? 1 : 0}`;
       if (lk !== lnKey) {
         lnKey = lk; ln.innerHTML = '';
-        if (!two) lines(p.id, role, y).then(L => { if (lnKey === lk) ln.innerHTML = linesHTML(L, role, y); });
+        if (!two) lines(p.id, role, y).then(L => { if (lnKey === lk) ln.innerHTML = linesHTML(L, role, y, slim); });
       }
       const yrs = two && y2 !== y ? `${y} vs ${y2}` : String(y);
       const extras = view.career ? [STAT_MODES[mode].toUpperCase(), rot ? 'AUTO' : ''].filter(Boolean)
@@ -1547,11 +1575,11 @@ const SS = (() => {
       if (mb !== bodyTok) return;
       if (err || (!view.career && !L)) { body.innerHTML = empty(view.career ? 'Stats didn’t load' : 'Savant didn’t answer', 'Pick the view again to retry.'); bodyKey = ''; return; }
       const W = body.clientWidth, H = body.clientHeight;
-      const c = { p, role, y, L, me: leagueRec(L, role, p.id), P, CD, o, mode, rot, W, H };
+      const c = { p, role, y, L, me: leagueRec(L, role, p.id), P, CD, o, mode, rot, W, H, slim };
       let html;
       if (!two) html = view.fn(c);
       else {
-        const c2 = { p: p2, role: role2, y: y2, L: L2, me: leagueRec(L2, role2, p2.id), P: P2, CD: CD2, o, mode, rot, W, H };
+        const c2 = { p: p2, role: role2, y: y2, L: L2, me: leagueRec(L2, role2, p2.id), P: P2, CD: CD2, o, mode, rot, W, H, slim };
         if (view.career && role === role2 && mode !== 'years') html = vTape(c, c2, mode) + rotBar(c);
         else if (view.career) html = halves(Object.assign({}, c, { rot: null }), Object.assign({}, c2, { rot: null }), x => mode === 'years' ? yearTable(x, x.CD, YEAR_KEYS_NARROW[x.role]) : vStats(x), x => mode === 'years' ? yearTable(x, x.CD, YEAR_KEYS_NARROW[x.role]) : vStats(x)) + rotBar(c);
         else if ((view.key === 'card' || view.key === 'overview') && role === role2) html = vH2H(c, c2);
@@ -1563,7 +1591,8 @@ const SS = (() => {
     function teamHalf(id, y, L, duo) {
       const t = team(id), tt = L?.T?.[id], nm = teamName(id, y);
       const meta = [divOf(id).toUpperCase(), tt?.off?.pa ? `${tt.off.pa.toLocaleString()} PA` : '', tt?.off?.bbe ? `${tt.off.bbe.toLocaleString()} BATTED BALLS` : ''].filter(Boolean).join(' · ');
-      const fs = duo ? Math.min(44, Math.floor(300 / (nm.length * .55))) : Math.min(66, Math.floor(820 / (nm.length * .55)));
+      const fs = el.classList.contains('slim') ? Math.min(duo ? 34 : 42, Math.floor((duo ? 360 : 380) / (nm.length * .5)))
+        : duo ? Math.min(44, Math.floor(300 / (nm.length * .55))) : Math.min(66, Math.floor(820 / (nm.length * .55)));
       return `<div class="half" style="--tc:${t?.color || '#2a3b4c'}"><div class="shot tlogo"><img src="${logo(id)}" alt=""></div><div class="pid"><div class="kick">${y} SEASON</div>` +
         `<div class="nm" style="font-size:${fs}px">${esc(nm.toUpperCase())}</div><div class="meta">${esc(meta)}</div></div></div>`;
     }
@@ -1576,7 +1605,7 @@ const SS = (() => {
       ln.innerHTML = ''; lnKey = '';
       const [L, L2] = await Promise.all([teamLeague(y).catch(() => null), two ? teamLeague(y2).catch(() => null) : null]);
       if (my !== token) return;
-      const hk = `T|${S.team}|${y}|${two ? S.team2 + '|' + y2 : ''}|${L ? 1 : 0}`;
+      const hk = `T|${el.classList.contains('slim') ? 'S' : ''}${S.team}|${y}|${two ? S.team2 + '|' + y2 : ''}|${L ? 1 : 0}`;
       if (hk !== hdKey) {
         hdKey = hk;
         if (S.team) {
@@ -1607,14 +1636,15 @@ const SS = (() => {
       if (mb !== bodyTok) return;
       if (err || !L) { body.innerHTML = empty('Savant didn’t answer', 'Pick the graphic again to retry.'); bodyKey = ''; return; }
       const W = body.clientWidth, H = body.clientHeight;
-      const c = { team: S.team, team2: two ? S.team2 : null, y, L, G, R, PL, GPL, POS: POSd, GPOS, o, W, H };
+      const slim = el.classList.contains('slim');
+      const c = { team: S.team, team2: two ? S.team2 : null, y, L, G, R, PL, GPL, POS: POSd, GPOS, o, W, H, slim };
       let html;
       if (!two || !view.needTeam) html = view.fn(c);
       else {
         const [P2, G2POS] = view.pos ? await Promise.all([teamPosOAA(y2), gy2 ? teamPosOAA(gy2) : null]) : [null, null];
         const PL2 = view.roster ? await league(y2) : null, GPL2 = view.roster && gy2 ? await league(gy2) : null;
         if (mb !== bodyTok) return;
-        const c2 = { team: S.team2, y: y2, L: L2, G: G2, R: R2, PL: PL2, GPL: GPL2, POS: P2, GPOS: G2POS, o, W, H };
+        const c2 = { team: S.team2, y: y2, L: L2, G: G2, R: R2, PL: PL2, GPL: GPL2, POS: P2, GPOS: G2POS, o, W, H, slim };
         html = view.key === 'tcard' ? vTeamH2H(c, c2) : halves(c, c2, view.fn, view.fn);
       }
       body.innerHTML = `<div class="vw in">${html}</div>`;
@@ -1670,6 +1700,6 @@ const SS = (() => {
     setInterval(poll, 30000);
   }
 
-  return { SEASON, FIRST_YEAR, SAFE_DEFAULT, CAMS, DB, TEAMS, team, headshot, logo, load, ensure, search, league, leagueRec, cardCount, lines, pitches,
+  return { SEASON, FIRST_YEAR, SAFE_DEFAULT, ALLJM, CAMS, DB, TEAMS, team, headshot, logo, load, ensure, search, league, leagueRec, cardCount, lines, pitches,
     VIEWS, viewOf, cycleInfo, teamLeague, teamName, TEAM_FIRST, QM, logoLight, LOC_FILTER, SPRAY_FILTER, ZONE_METRIC, createStage, pctColor, esc, hubOf, publisher, subscribe };
 })();

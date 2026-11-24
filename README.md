@@ -80,3 +80,10 @@ The display renders even while off air, so the next player's data is already loa
 
 The Jomboy Cloudflare relay (`/r/<room>`, WebSocket plus a 30s poll) plus BroadcastChannel.
 The wire only carries the player id, graphic and options.
+
+## Frame
+
+**Frame → All-JM column** puts every graphic in the same 528×1004 panel as All-JM Team and MLB
+Standings (pinned right, top 38px), so it drops into that Browser Source spot unchanged. It turns
+the background transparent, slides in from the right, trims the stat lines to six columns, and
+stacks compare A over B. The default **Between the host cams** frame and its safe area are unchanged.
